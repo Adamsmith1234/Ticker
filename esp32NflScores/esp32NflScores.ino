@@ -28,10 +28,14 @@ const String binaryUrl  = baseUrl + "firmware.bin";
 void checkForUpdates() {
   Serial.println("Checking for updates...");
   WiFiClientSecure client;
-  client.setInsecure(); // GitHub uses HTTPS; this allows the connection without a specific cert
+  client.setInsecure(); 
 
   HTTPClient http;
   http.begin(client, versionUrl);
+
+  // ADD THIS LINE TO FIX THE 301 ERROR
+  http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
   int httpCode = http.GET();
 
   if (httpCode == 200) {
