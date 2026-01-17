@@ -23,7 +23,7 @@
 const int currentVersion = 3; 
 
 // Replace with your GitHub Username and Repo name
-const String baseUrl = "https://raw.githubusercontent.com/Adamsmith1234/Ticker/main/";
+const String baseUrl = "https://raw.githubusercontent.com/Adamsmith1234/Ticker/southwick/";
 const String versionUrl = baseUrl + "version.txt";
 const String binaryUrl  = baseUrl + "firmware.bin";
 
@@ -201,7 +201,7 @@ void displayWeather() {
   if (!weatherLoaded) return;
 
   // 1. Setup the text parts (Condition first, then stats + summary)
-  String prefix = "BLOOMFIELD: " + localWeather.condition + " ";
+  String prefix = "HOME WEATHER: " + localWeather.condition + " ";
   String suffix = " " + String(localWeather.temp, 0) + "F | " + localWeather.summary;
 
   // 2. Calculate offsets
@@ -295,7 +295,8 @@ void fetchWeather() {
   HTTPClient http;
 
   // Expanded URL for extra stats
-  String url = "https://api.open-meteo.com/v1/forecast?latitude=41.83&longitude=-72.70&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph";
+  // UPDATED URL for Southwick, MA (Lat: 42.05, Lon: -72.77)
+  String url = "https://api.open-meteo.com/v1/forecast?latitude=42.05&longitude=-72.77&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph";
 
   if (http.begin(client, url)) {
     if (http.GET() == 200) {
@@ -327,8 +328,8 @@ void fetchWeather() {
  void fetchForecastText() {
   HTTPClient http;
   // This is the specific Gridpoint for Bloomfield, CT
-  String url = "https://api.weather.gov/gridpoints/BOX/68,91/forecast";
-  
+  String url = "https://api.weather.gov/gridpoints/BOX/38,72/forecast";
+
   http.begin(url);
   // NWS requires a User-Agent header or it will reject the request
   http.addHeader("User-Agent", "ESP32-Weather-Display"); 
