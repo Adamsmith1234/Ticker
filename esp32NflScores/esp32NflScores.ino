@@ -11,6 +11,7 @@
 #include <FastLED_NeoMatrix.h>
 #include <Adafruit_GFX.h>
 #include <ArduinoJson.h>
+#include <WiFiManager.h> // 
 
 /* ================= CONFIG ================= */
 
@@ -18,7 +19,7 @@
 #include <WiFiClientSecure.h>
 
 // Increase this number every time you push a new update to GitHub
-const int currentVersion = 1; 
+const int currentVersion = 2; 
 
 // Replace with your GitHub Username and Repo name
 const String baseUrl = "https://github.com/Adamsmith1234/Ticker/tree/main/";
@@ -76,8 +77,6 @@ void checkForUpdates() {
 CRGB leds[NUM_LEDS];
 FastLED_NeoMatrix *matrix;
 
-const char* ssid = "Swick Partment";
-const char* password = "Surowiec";
 WebServer server(80);
 
 /* ================= MODES & SETTINGS ================= */
@@ -451,9 +450,20 @@ void setup() {
   matrix = new FastLED_NeoMatrix(leds, WIDTH, HEIGHT, NEO_MATRIX_TOP + NEO_MATRIX_LEFT + NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG);
   matrix->begin(); matrix->setTextWrap(false);
   
-  WiFi.begin(ssid, password);
-  while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
+  WiFiManager wm;
+
+  // This will stay here until he connects it to his WiFi.
+  // If it can't find saved WiFi, it starts an Access Point named "Ticker-Setup"
+  if (!wm.autoConnect("Ticker-Setup")) {
+      Serial.println("Failed to connect and hit timeout");
+      ESP.restart();
+  }
+
+  Serial.println("WiFi Connected!");
   Serial.println(WiFi.localIP());
+
+  checkForUpdates();
+  setupWeb();
 
   // --- TRIGGER UPDATE ON BOOT ---
   checkForUpdates();
