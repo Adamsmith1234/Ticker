@@ -13,6 +13,57 @@
 #include <ArduinoJson.h>
 
 /* ================= CONFIG ================= */
+
+#include <HTTPUpdate.h>
+#include <WiFiClientSecure.h>
+
+// Increase this number every time you push a new update to GitHub
+const int currentVersion = 1; 
+
+// Replace with your GitHub Username and Repo name
+const String baseUrl = "https://github.com/Adamsmith1234/Ticker/tree/main/";
+const String versionUrl = baseUrl + "version.txt";
+const String binaryUrl  = baseUrl + "firmware.bin";
+
+void checkForUpdates() {
+  Serial.println("Checking for updates...");
+  WiFiClientSecure client;
+  client.setInsecure(); // GitHub uses HTTPS; this allows the connection without a specific cert
+
+  HTTPClient http;
+  http.begin(client, versionUrl);
+  int httpCode = http.GET();
+
+  if (httpCode == 200) {
+    int newVersion = http.getString().toInt();
+    Serial.printf("Current: %d, New: %d\n", currentVersion, newVersion);
+
+    if (newVersion > currentVersion) {
+      Serial.println("New version found! Starting update...");
+      
+      // The update() function handles the download and will automatically reboot on success
+      t_httpUpdate_return ret = httpUpdate.update(client, binaryUrl);
+
+      switch (ret) {
+        case HTTP_UPDATE_FAILED:
+          Serial.printf("Update Failed (%d): %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+          break;
+        case HTTP_UPDATE_NO_UPDATES:
+          Serial.println("No updates found.");
+          break;
+        case HTTP_UPDATE_OK:
+          Serial.println("Update success!");
+          break;
+      }
+    } else {
+      Serial.println("Software is up to date.");
+    }
+  } else {
+    Serial.printf("Failed to check version. HTTP Code: %d\n", httpCode);
+  }
+  http.end();
+}
+
 #define DATA_PIN 13 
 #define WIDTH 96
 #define HEIGHT 8
@@ -399,6 +450,9 @@ void setup() {
   WiFi.begin(ssid, password);
   while (WiFi.status() != WL_CONNECTED) { delay(500); Serial.print("."); }
   Serial.println(WiFi.localIP());
+
+  // --- TRIGGER UPDATE ON BOOT ---
+  checkForUpdates();
   setupWeb();
 }
 
