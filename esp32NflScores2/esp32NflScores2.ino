@@ -12,6 +12,7 @@
 #include <Adafruit_GFX.h>
 #include <ArduinoJson.h>
 #include <WiFiManager.h> // 
+#include <ESPmDNS.h>
 
 /* ================= CONFIG ================= */
 
@@ -19,10 +20,10 @@
 #include <WiFiClientSecure.h>
 
 // Increase this number every time you push a new update to GitHub
-const int currentVersion = 2; 
+const int currentVersion = 1; 
 
 // Replace with your GitHub Username and Repo name
-const String baseUrl = "https://github.com/Adamsmith1234/Ticker/tree/main/";
+const String baseUrl = "https://raw.githubusercontent.com/Adamsmith1234/Ticker/main/";
 const String versionUrl = baseUrl + "version.txt";
 const String binaryUrl  = baseUrl + "firmware.bin";
 
@@ -323,7 +324,7 @@ void fetchWeather() {
   }
 }
 
-void fetchForecastText() {
+ void fetchForecastText() {
   HTTPClient http;
   // This is the specific Gridpoint for Bloomfield, CT
   String url = "https://api.weather.gov/gridpoints/BOX/68,91/forecast";
@@ -349,6 +350,7 @@ void fetchForecastText() {
   http.end();
 }
 
+
 String cleanText(String text) {
   // Replace common "Smart" characters with standard ASCII
   text.replace("’", "'");  // Smart apostrophe
@@ -358,6 +360,28 @@ String cleanText(String text) {
   text.replace("–", "-");  // En dash
   text.replace("—", "-");  // Em dash
   return text;
+}
+
+void configModeCallback (WiFiManager *myWiFiManager) {
+  // This only runs if Brandon needs to connect to "Ticker-Setup"
+  matrix->fillScreen(0);
+  matrix->setTextColor(matrix->Color(255, 0, 0)); // Red for attention
+  matrix->setCursor(2, 1);
+  matrix->print("SETUP");
+  matrix->show();
+  
+  // Optional: Wait 2 seconds then scroll the Setup IP (192.168.4.1) 
+  // so he knows exactly what to type to reach the portal.
+  delay(2000);
+  String setupIP = WiFi.softAPIP().toString();
+  int msgWidth = (setupIP.length() * 6) + WIDTH;
+  for (int x = WIDTH; x > -msgWidth; x--) {
+    matrix->fillScreen(0);
+    matrix->setCursor(x, 1);
+    matrix->print(setupIP);
+    matrix->show();
+    delay(100);
+  }
 }
 
 /* ================= WEB DASHBOARD ================= */
@@ -448,24 +472,23 @@ void setup() {
   FastLED.addLeds<WS2812B, DATA_PIN, GRB>(leds, NUM_LEDS);
   FastLED.setBrightness(currentBrightness);
   matrix = new FastLED_NeoMatrix(leds, WIDTH, HEIGHT, NEO_MATRIX_TOP + NEO_MATRIX_LEFT + NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG);
-  matrix->begin(); matrix->setTextWrap(false);
+  matrix->begin(); 
+  matrix->setTextWrap(false);
   
   WiFiManager wm;
+  
+  // This is the key: It only shows the IP if it's NOT connected to WiFi [cite: 100-101, 225].
+  wm.setAPCallback(configModeCallback);
 
-  // This will stay here until he connects it to his WiFi.
-  // If it can't find saved WiFi, it starts an Access Point named "Ticker-Setup"
   if (!wm.autoConnect("Ticker-Setup")) {
-      Serial.println("Failed to connect and hit timeout");
+      Serial.println("Connection Failed");
       ESP.restart();
   }
 
+  // Once it connects, it skips all the IP stuff and just starts the app
   Serial.println("WiFi Connected!");
-  Serial.println(WiFi.localIP());
+  Serial.println(WiFi.localIP()); // Still prints to your computer's Serial Monitor for you
 
-  checkForUpdates();
-  setupWeb();
-
-  // --- TRIGGER UPDATE ON BOOT ---
   checkForUpdates();
   setupWeb();
 }
@@ -525,7 +548,7 @@ void loop() {
     else if (cycleStage == 3) {
       if (millis() - lastWeatherFetch > 900000 || lastWeatherFetch == 0) {
         fetchWeather();
-        fetchForecastText();
+        //fetchForecastText();
       }
       displayWeather();
       cycleStage = 0; // Restart cycle
