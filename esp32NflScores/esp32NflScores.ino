@@ -26,8 +26,8 @@ const char* password = "Surowiec";
 WebServer server(80);
 
 /* ================= MODES & SETTINGS ================= */
-enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER };
-volatile DisplayMode currentMode = MODE_NFL;
+enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE };
+volatile DisplayMode currentMode = MODE_CYCLE;
 
 volatile int currentBrightness = 40;
 volatile int scrollDelay = 70;
@@ -103,7 +103,7 @@ void displayNFLGame(int idx) {
   Game &g = games[idx];
   String line = g.awayAbbr + ":" + g.awayScore + " - " + g.homeAbbr + ":" + g.homeScore;
   int x = WIDTH, minX = -((int)line.length() * 6);
-  while (x > minX && currentMode == MODE_NFL) {
+  while (x > minX && (currentMode == MODE_NFL || currentMode == MODE_CYCLE)) {
     server.handleClient(); yield();
     matrix->fillScreen(0); matrix->setCursor(x, 1);
     matrix->setTextColor(matrix->Color(g.ar, g.ag, g.ab)); matrix->print(g.awayAbbr + ":" + g.awayScore);
@@ -119,7 +119,7 @@ void displayStock(int idx) {
   uint16_t color = up ? matrix->Color(0,255,0) : matrix->Color(255,0,0);
   String text = s.symbol + " " + String(s.price,2) + " (" + (up?"+":"") + String(s.percent,2) + "%)";
   int x = WIDTH, minX = -((int)text.length() * 6);
-  while (x > minX && currentMode == MODE_STOCKS) {
+  while (x > minX && (currentMode == MODE_STOCKS || currentMode == MODE_CYCLE)) {
     server.handleClient(); yield();
     matrix->fillScreen(0); matrix->setCursor(x, 1);
     matrix->setTextColor(color); matrix->print(text);
@@ -130,7 +130,7 @@ void displayStock(int idx) {
 void displayPhrase(int idx) {
   String text = phrases[idx];
   int x = WIDTH, minX = -((int)text.length() * 6);
-  while (x > minX && currentMode == MODE_PHRASES) {
+  while (x > minX && (currentMode == MODE_PHRASES || currentMode == MODE_CYCLE)) {
     server.handleClient(); yield();
     matrix->fillScreen(0); 
     matrix->setCursor(x, 1);
@@ -158,7 +158,7 @@ void displayWeather() {
   int x = WIDTH; 
   int minX = -totalWidth;
   
-  while (x > minX && currentMode == MODE_WEATHER) {
+  while (x > minX && (currentMode == MODE_WEATHER || currentMode == MODE_CYCLE)) {
     server.handleClient(); 
     yield();
     matrix->fillScreen(0);
@@ -319,6 +319,7 @@ void setupWeb() {
     html += "input[type=range]{width:100%; margin:15px 0;}</style></head><body>";
     
     html += "<h2>Matrix Dashboard</h2>";
+    html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";    
     html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
@@ -377,7 +378,13 @@ void setupWeb() {
   server.on("/clear", []() { phraseCount = 0; currentPhrase = 0; server.send(200); });
   server.on("/brightness", [](){ if(server.hasArg("v")){currentBrightness=constrain(server.arg("v").toInt(),1,40); FastLED.setBrightness(currentBrightness);} server.send(200); });
   server.on("/speed", [](){ if(server.hasArg("v")){scrollDelay=constrain(server.arg("v").toInt(),20,150);} server.send(200); });
-
+  server.on("/cycle", [](){ 
+    currentMode = MODE_CYCLE; 
+    lastNFLFetch = 0; 
+    lastStockFetch = 0; 
+    lastWeatherFetch = 0;
+    server.send(200, "text/plain", "OK"); 
+  });
   server.begin();
 }
 
@@ -422,5 +429,38 @@ void loop() {
       fetchForecastText();   // Gets the plain-text sentence
     }
     displayWeather();
+  }
+
+  else if (currentMode == MODE_CYCLE) {
+    static int cycleStage = 0; // 0:NFL, 1:Stock, 2:Phrase, 3:Weather
+    
+    if (cycleStage == 0) {
+      if (currentGame == 0 && (millis() - lastNFLFetch > 60000 || lastNFLFetch == 0)) fetchScores();
+      if (gameCount > 0) { 
+        displayNFLGame(currentGame++); 
+        if (currentGame >= gameCount) { currentGame = 0; cycleStage = 1; }
+      } else { cycleStage = 1; }
+    } 
+    else if (cycleStage == 1) {
+      if (currentStock == 0 && (millis() - lastStockFetch > 60000 || lastStockFetch == 0)) fetchStocks();
+      if (stockCount > 0) { 
+        displayStock(currentStock++); 
+        if (currentStock >= stockCount) { currentStock = 0; cycleStage = 2; }
+      } else { cycleStage = 2; }
+    }
+    else if (cycleStage == 2) {
+      if (phraseCount > 0) { 
+        displayPhrase(currentPhrase++); 
+        if (currentPhrase >= phraseCount) { currentPhrase = 0; cycleStage = 3; }
+      } else { cycleStage = 3; }
+    }
+    else if (cycleStage == 3) {
+      if (millis() - lastWeatherFetch > 900000 || lastWeatherFetch == 0) {
+        fetchWeather();
+        fetchForecastText();
+      }
+      displayWeather();
+      cycleStage = 0; // Restart cycle
+    }
   }
 }
