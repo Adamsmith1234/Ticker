@@ -254,36 +254,42 @@ void displayWeather() {
 }
 
 void displayFireplace() {
-  // Step 1: Cool down every cell a little bit
-  for(int i = 0; i < WIDTH * HEIGHT; i++) {
-    heat[i] = qsub8(heat[i],  random8(0, ((COOLING * 10) / HEIGHT) + 2));
+  // 1. Cool down the top 4 rows (the flame tips)
+  // We cool them faster so the flames don't just stay at the top
+  for(int i = 0; i < WIDTH * 4; i++) {
+    heat[i] = qsub8(heat[i], random8(0, 40)); 
   }
 
-  // Step 2: Heat drifts 'up' and diffuses a little
-  for(int y = HEIGHT - 1; y >= 1; y--) {
+  // 2. Heat drifts UP (from row 4 toward row 0)
+  for(int y = 0; y < 4; y++) {
     for(int x = 0; x < WIDTH; x++) {
-      // Calculate heat for this pixel based on the one below it
-      heat[y * WIDTH + x] = (heat[(y - 1) * WIDTH + x] + heat[(y - 2) * WIDTH + x]) / 2;
+      // Pull heat from the row below it
+      heat[y * WIDTH + x] = (heat[(y + 1) * WIDTH + x] + heat[(y + 2) * WIDTH + x]) / 2;
     }
   }
 
-  // Step 3: Randomly ignite new 'sparks' near the bottom
-  if(random8() < SPARKING) {
-    int x = random8(WIDTH);
-    heat[x] = qadd8(heat[x], random8(160, 255));
+  // 3. The "Embers" (Bottom 4 rows)
+  // We keep these high-heat but add a tiny flicker so they look alive
+  for(int i = WIDTH * 4; i < WIDTH * HEIGHT; i++) {
+    heat[i] = random8(140, 220); // Steady orange/red glow
   }
 
-  // Step 4: Map heat to LED colors
+  // 4. Occasional bright "Sparks" from the embers into the flames
+  if(random8() < 30) {
+    int x = random8(WIDTH);
+    heat[4 * WIDTH + x] = 255; // Ignite a bright spot at the log line
+  }
+
+  // 5. Draw to the Matrix
   for(int y = 0; y < HEIGHT; y++) {
     for(int x = 0; x < WIDTH; x++) {
       byte colorIndex = heat[y * WIDTH + x];
-      // CRGBHeatColor converts 0-255 into black-red-orange-yellow-white
-      CRGB color = HeatColor(colorIndex); 
-      matrix->drawPixel(x, (HEIGHT-1) - y, matrix->Color(color.r, color.g, color.b));
+      CRGB color = HeatColor(colorIndex);
+      matrix->drawPixel(x, y, matrix->Color(color.r, color.g, color.b));
     }
   }
   matrix->show();
-  delay(30); // Controls the "speed" of the flames
+  delay(40);
 }
 /* ================= FETCH LOGIC ================= */
 void fetchScores() {
