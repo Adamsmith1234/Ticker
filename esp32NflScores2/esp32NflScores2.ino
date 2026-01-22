@@ -20,7 +20,7 @@
 #include <WiFiClientSecure.h>
 
 // Increase this number every time you push a new update to GitHub
-const int currentVersion = 3; 
+const int currentVersion = 4; 
 
 // Replace with your GitHub Username and Repo name
 const String baseUrl = "https://raw.githubusercontent.com/Adamsmith1234/Ticker/main/";
@@ -78,10 +78,15 @@ void checkForUpdates() {
 CRGB leds[NUM_LEDS];
 FastLED_NeoMatrix *matrix;
 
+// Fire settings (Adjust these to change the "intensity")
+#define COOLING  60   // Higher = shorter flames
+#define SPARKING 140  // Higher = more random sparks
+static byte heat[WIDTH * HEIGHT]; // Heat memory for every pixel
+
 WebServer server(80);
 
 /* ================= MODES & SETTINGS ================= */
-enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE };
+enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE };
 volatile DisplayMode currentMode = MODE_CYCLE;
 
 volatile int currentBrightness = 40;
@@ -248,6 +253,38 @@ void displayWeather() {
   }
 }
 
+void displayFireplace() {
+  // Step 1: Cool down every cell a little bit
+  for(int i = 0; i < WIDTH * HEIGHT; i++) {
+    heat[i] = qsub8(heat[i],  random8(0, ((COOLING * 10) / HEIGHT) + 2));
+  }
+
+  // Step 2: Heat drifts 'up' and diffuses a little
+  for(int y = HEIGHT - 1; y >= 1; y--) {
+    for(int x = 0; x < WIDTH; x++) {
+      // Calculate heat for this pixel based on the one below it
+      heat[y * WIDTH + x] = (heat[(y - 1) * WIDTH + x] + heat[(y - 2) * WIDTH + x]) / 2;
+    }
+  }
+
+  // Step 3: Randomly ignite new 'sparks' near the bottom
+  if(random8() < SPARKING) {
+    int x = random8(WIDTH);
+    heat[x] = qadd8(heat[x], random8(160, 255));
+  }
+
+  // Step 4: Map heat to LED colors
+  for(int y = 0; y < HEIGHT; y++) {
+    for(int x = 0; x < WIDTH; x++) {
+      byte colorIndex = heat[y * WIDTH + x];
+      // CRGBHeatColor converts 0-255 into black-red-orange-yellow-white
+      CRGB color = HeatColor(colorIndex); 
+      matrix->drawPixel(x, (HEIGHT-1) - y, matrix->Color(color.r, color.g, color.b));
+    }
+  }
+  matrix->show();
+  delay(30); // Controls the "speed" of the flames
+}
 /* ================= FETCH LOGIC ================= */
 void fetchScores() {
   WiFiClientSecure client; client.setInsecure();
@@ -401,6 +438,7 @@ void setupWeb() {
     html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
+    html += "<button class='btn' onclick='fetch(\"/fireplace\")'>Fireplace Mode</button>";
 
     html += "<button class='btn' onclick='fetch(\"/phrases\")'>Phrase Mode</button>";
 
@@ -439,6 +477,7 @@ void setupWeb() {
   server.on("/nfl", [](){ currentMode = MODE_NFL; lastNFLFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/stocks", [](){ currentMode = MODE_STOCKS; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/weather", [](){ currentMode = MODE_WEATHER; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
+  server.on("/fireplace", [](){ currentMode = MODE_FIREPLACE; server.send(200,"text/plain","OK"); });
   server.on("/phrases", [](){ 
     currentMode = MODE_PHRASES; 
     server.send(200,"text/plain","OK"); 
@@ -520,6 +559,10 @@ void loop() {
       fetchForecastText();   // Gets the plain-text sentence
     }
     displayWeather();
+  }
+
+  else if (currentMode == MODE_FIREPLACE) {
+    displayFireplace();
   }
 
   else if (currentMode == MODE_CYCLE) {
