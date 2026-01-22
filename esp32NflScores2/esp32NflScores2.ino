@@ -20,7 +20,7 @@
 #include <WiFiClientSecure.h>
 
 // Increase this number every time you push a new update to GitHub
-const int currentVersion = 5; 
+const int currentVersion = 6; 
 
 // Replace with your GitHub Username and Repo name
 const String baseUrl = "https://raw.githubusercontent.com/Adamsmith1234/Ticker/main/";
@@ -254,42 +254,54 @@ void displayWeather() {
 }
 
 void displayFireplace() {
-  // 1. Cool down the top 4 rows (the flame tips)
-  // We cool them faster so the flames don't just stay at the top
+  // --- SETTINGS FOR DEEP REDS ---
+  // COOLING: Higher = more red/orange. Try 80 if it's still too yellow.
+  // SPARKING: Lower = fewer "white hot" spots.
+  const int customCooling = 85; 
+  const int customSparking = 100;
+
+  // 1. Cool down the top 4 rows (the flames)
   for(int i = 0; i < WIDTH * 4; i++) {
-    heat[i] = qsub8(heat[i], random8(0, 40)); 
+    // We cool them more aggressively to ensure they turn red before disappearing
+    heat[i] = qsub8(heat[i], random8(0, customCooling)); 
   }
 
-  // 2. Heat drifts UP (from row 4 toward row 0)
+  // 2. Heat drifts UP (row 4 -> row 0)
   for(int y = 0; y < 4; y++) {
     for(int x = 0; x < WIDTH; x++) {
-      // Pull heat from the row below it
+      // Average the heat from below to create a "flicker"
       heat[y * WIDTH + x] = (heat[(y + 1) * WIDTH + x] + heat[(y + 2) * WIDTH + x]) / 2;
     }
   }
 
   // 3. The "Embers" (Bottom 4 rows)
-  // We keep these high-heat but add a tiny flicker so they look alive
+  // We force these into the RED/ORANGE range (heat 100-180)
   for(int i = WIDTH * 4; i < WIDTH * HEIGHT; i++) {
-    heat[i] = random8(140, 220); // Steady orange/red glow
+    heat[i] = random8(80, 160); 
   }
 
-  // 4. Occasional bright "Sparks" from the embers into the flames
-  if(random8() < 30) {
+  // 4. Random Sparks at the "Log Line" (Row 4)
+  if(random8() < customSparking) {
     int x = random8(WIDTH);
-    heat[4 * WIDTH + x] = 255; // Ignite a bright spot at the log line
+    heat[4 * WIDTH + x] = qadd8(heat[4 * WIDTH + x], random8(100, 200));
   }
 
-  // 5. Draw to the Matrix
+  // 5. Render with a "Warm" mapping
   for(int y = 0; y < HEIGHT; y++) {
     for(int x = 0; x < WIDTH; x++) {
       byte colorIndex = heat[y * WIDTH + x];
+      
+      // Use HeatColor but cap the intensity so it doesn't stay white/yellow
       CRGB color = HeatColor(colorIndex);
+      
+      // OPTIONAL: Boost the Red channel slightly for extra warmth
+      if(color.r > 0) color.r = qadd8(color.r, 20); 
+
       matrix->drawPixel(x, y, matrix->Color(color.r, color.g, color.b));
     }
   }
   matrix->show();
-  delay(40);
+  delay(60); // Slower speed makes the "rising" look more like real fire
 }
 /* ================= FETCH LOGIC ================= */
 void fetchScores() {
