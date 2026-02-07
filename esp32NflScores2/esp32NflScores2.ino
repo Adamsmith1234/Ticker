@@ -20,7 +20,7 @@
 #include <WiFiClientSecure.h>
 
 // Increase this number every time you push a new update to GitHub
-const int currentVersion = 3; 
+const int currentVersion = 6; 
 
 // Replace with your GitHub Username and Repo name
 const String baseUrl = "https://raw.githubusercontent.com/Adamsmith1234/Ticker/southwick/";
@@ -78,10 +78,15 @@ void checkForUpdates() {
 CRGB leds[NUM_LEDS];
 FastLED_NeoMatrix *matrix;
 
+// Fire settings (Adjust these to change the "intensity")
+#define COOLING  60   // Higher = shorter flames
+#define SPARKING 140  // Higher = more random sparks
+static byte heat[WIDTH * HEIGHT]; // Heat memory for every pixel
+
 WebServer server(80);
 
 /* ================= MODES & SETTINGS ================= */
-enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE };
+enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE };
 volatile DisplayMode currentMode = MODE_CYCLE;
 
 volatile int currentBrightness = 40;
@@ -248,6 +253,56 @@ void displayWeather() {
   }
 }
 
+void displayFireplace() {
+  // --- SETTINGS FOR DEEP REDS ---
+  // COOLING: Higher = more red/orange. Try 80 if it's still too yellow.
+  // SPARKING: Lower = fewer "white hot" spots.
+  const int customCooling = 85; 
+  const int customSparking = 100;
+
+  // 1. Cool down the top 4 rows (the flames)
+  for(int i = 0; i < WIDTH * 4; i++) {
+    // We cool them more aggressively to ensure they turn red before disappearing
+    heat[i] = qsub8(heat[i], random8(0, customCooling)); 
+  }
+
+  // 2. Heat drifts UP (row 4 -> row 0)
+  for(int y = 0; y < 4; y++) {
+    for(int x = 0; x < WIDTH; x++) {
+      // Average the heat from below to create a "flicker"
+      heat[y * WIDTH + x] = (heat[(y + 1) * WIDTH + x] + heat[(y + 2) * WIDTH + x]) / 2;
+    }
+  }
+
+  // 3. The "Embers" (Bottom 4 rows)
+  // We force these into the RED/ORANGE range (heat 100-180)
+  for(int i = WIDTH * 4; i < WIDTH * HEIGHT; i++) {
+    heat[i] = random8(80, 160); 
+  }
+
+  // 4. Random Sparks at the "Log Line" (Row 4)
+  if(random8() < customSparking) {
+    int x = random8(WIDTH);
+    heat[4 * WIDTH + x] = qadd8(heat[4 * WIDTH + x], random8(100, 200));
+  }
+
+  // 5. Render with a "Warm" mapping
+  for(int y = 0; y < HEIGHT; y++) {
+    for(int x = 0; x < WIDTH; x++) {
+      byte colorIndex = heat[y * WIDTH + x];
+      
+      // Use HeatColor but cap the intensity so it doesn't stay white/yellow
+      CRGB color = HeatColor(colorIndex);
+      
+      // OPTIONAL: Boost the Red channel slightly for extra warmth
+      if(color.r > 0) color.r = qadd8(color.r, 20); 
+
+      matrix->drawPixel(x, y, matrix->Color(color.r, color.g, color.b));
+    }
+  }
+  matrix->show();
+  delay(60); // Slower speed makes the "rising" look more like real fire
+}
 /* ================= FETCH LOGIC ================= */
 void fetchScores() {
   WiFiClientSecure client; client.setInsecure();
@@ -402,6 +457,7 @@ void setupWeb() {
     html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
+    html += "<button class='btn' onclick='fetch(\"/fireplace\")'>Fireplace Mode</button>";
 
     html += "<button class='btn' onclick='fetch(\"/phrases\")'>Phrase Mode</button>";
 
@@ -440,6 +496,7 @@ void setupWeb() {
   server.on("/nfl", [](){ currentMode = MODE_NFL; lastNFLFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/stocks", [](){ currentMode = MODE_STOCKS; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/weather", [](){ currentMode = MODE_WEATHER; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
+  server.on("/fireplace", [](){ currentMode = MODE_FIREPLACE; server.send(200,"text/plain","OK"); });
   server.on("/phrases", [](){ 
     currentMode = MODE_PHRASES; 
     server.send(200,"text/plain","OK"); 
@@ -521,6 +578,10 @@ void loop() {
       fetchForecastText();   // Gets the plain-text sentence
     }
     displayWeather();
+  }
+
+  else if (currentMode == MODE_FIREPLACE) {
+    displayFireplace();
   }
 
   else if (currentMode == MODE_CYCLE) {
