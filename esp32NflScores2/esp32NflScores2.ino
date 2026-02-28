@@ -549,6 +549,7 @@ void setup() {
 
   checkForUpdates();
   setupWeb();
+  Serial.printf("Free sketch space: %u\n", ESP.getFreeSketchSpace());
 }
 
 void loop() {

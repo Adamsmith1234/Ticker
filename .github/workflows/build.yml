@@ -48,8 +48,8 @@ jobs:
 
       - name: Rename Compiled Binary
         run: |
-          BIN_FILE=$(find build -name "*.bin" | head -n 1)
-          echo "Found binary: $BIN_FILE"
+          BIN_FILE=$(find build -name "*.ino.bin")
+          echo "Found firmware binary: $BIN_FILE"
           cp "$BIN_FILE" firmware.bin
 
       - name: Commit and Push firmware.bin and version.txt
