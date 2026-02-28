@@ -452,7 +452,7 @@ void setupWeb() {
     html += "input[type=color]{height:50px; cursor:pointer; background:#333;} ";
     html += "input[type=range]{width:100%; margin:15px 0;}</style></head><body>";
     
-    html += "<h2>Matrix Dashboard V10</h2>";
+    html += "<h2>Matrix Dashboard V11</h2>";
     html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";    
     html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
