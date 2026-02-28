@@ -13,6 +13,7 @@
 #include <ArduinoJson.h>
 #include <WiFiManager.h> // 
 #include <ESPmDNS.h>
+#include <version.h>
 
 /* ================= CONFIG ================= */
 

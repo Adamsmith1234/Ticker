@@ -1,0 +1,54 @@
+name: Build and Deploy ESP32 Firmware
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Setup Arduino CLI
+        uses: arduino/setup-arduino-cli@v1
+
+      - name: Install ESP32 Core
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+
+      - name: Install Required Libraries
+        run: |
+          arduino-cli lib install "WiFiManager"
+          arduino-cli lib install "Adafruit GFX Library"
+          arduino-cli lib install "Adafruit NeoPixel"
+
+      - name: Compile Firmware
+        run: |
+          arduino-cli compile \
+            --fqbn esp32:esp32:esp32 \
+            --output-dir build \
+            esp32NflScores2
+
+      - name: Extract Version from version.h
+        run: |
+          VERSION=$(grep FIRMWARE_VERSION esp32NflScores2/version.h | cut -d '"' -f2)
+          echo $VERSION > version.txt
+          echo "Version detected: $VERSION"
+
+      - name: Rename Compiled Binary
+        run: |
+          mv build/*.bin firmware.bin
+
+      - name: Commit and Push firmware.bin and version.txt
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "actions@github.com"
+          git add firmware.bin version.txt
+          git commit -m "Auto-build firmware and update version.txt"
+          git push
