@@ -45,7 +45,9 @@ jobs:
 
       - name: Rename Compiled Binary
         run: |
-          mv build/*.bin firmware.bin
+          BIN_FILE=$(find build -name "*.bin" | head -n 1)
+          echo "Found binary: $BIN_FILE"
+          cp "$BIN_FILE" firmware.bin
 
       - name: Commit and Push firmware.bin and version.txt
         run: |
