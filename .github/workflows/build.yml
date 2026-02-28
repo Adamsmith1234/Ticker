@@ -25,8 +25,10 @@ jobs:
       - name: Install Required Libraries
         run: |
           arduino-cli lib install "WiFiManager"
+          arduino-cli lib install "FastLED"
+          arduino-cli lib install "FastLED NeoMatrix"
           arduino-cli lib install "Adafruit GFX Library"
-          arduino-cli lib install "Adafruit NeoPixel"
+          arduino-cli lib install "ArduinoJson"
 
       - name: Compile Firmware
         run: |
