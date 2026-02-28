@@ -33,7 +33,7 @@ jobs:
       - name: Compile Firmware
         run: |
           arduino-cli compile \
-            --fqbn esp32:esp32:esp32 \
+            --fqbn esp32:esp32:esp32:PartitionScheme=min_spiffs \
             --output-dir build \
             esp32NflScores2
 
