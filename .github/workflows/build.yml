@@ -42,7 +42,7 @@ jobs:
 
       - name: Extract Version from version.h
         run: |
-          VERSION=$(grep FIRMWARE_VERSION esp32NflScores2/version.h | cut -d '"' -f2)
+          VERSION=$(grep FIRMWARE_VERSION esp32NflScores2/version.h | grep -o '[0-9]\+')
           echo $VERSION > version.txt
           echo "Version detected: $VERSION"
 
