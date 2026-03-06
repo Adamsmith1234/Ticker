@@ -85,7 +85,7 @@ FastLED_NeoMatrix *matrix;
 static byte heat[WIDTH * HEIGHT]; // Heat memory for every pixel
 
 //0 = red, 1 = green, 2 = blue
-int flameMode = 0;
+int flameMode = 1;
 
 WebServer server(80);
 
