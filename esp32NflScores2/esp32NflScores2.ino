@@ -84,6 +84,9 @@ FastLED_NeoMatrix *matrix;
 #define SPARKING 140  // Higher = more random sparks
 static byte heat[WIDTH * HEIGHT]; // Heat memory for every pixel
 
+//0 = red, 1 = green, 2 = blue
+int flameMode = 0;
+
 WebServer server(80);
 
 /* ================= MODES & SETTINGS ================= */
@@ -291,12 +294,25 @@ void displayFireplace() {
   for(int y = 0; y < HEIGHT; y++) {
     for(int x = 0; x < WIDTH; x++) {
       byte colorIndex = heat[y * WIDTH + x];
-      
+      CRGB color;
+
       // Use HeatColor but cap the intensity so it doesn't stay white/yellow
-      CRGB color = HeatColor(colorIndex);
+
+      if (flameMode == 0){
+        color = HeatColor(colorIndex);
+      }
+
+      else if (flameMode == 1){
+        color = CRGB(0, colorIndex/2, colorIndex);
+      }
+
+      else if (flameMode == 2){
+        color =  CRGB(colorIndex/3, colorIndex, 0);
+      }
+      
       
       // OPTIONAL: Boost the Red channel slightly for extra warmth
-      if(color.r > 0) color.r = qadd8(color.r, 20); 
+      //if(color.r > 0) color.r = qadd8(color.r, 20); 
 
       matrix->drawPixel(x, y, matrix->Color(color.r, color.g, color.b));
     }
@@ -452,12 +468,21 @@ void setupWeb() {
     html += "input[type=color]{height:50px; cursor:pointer; background:#333;} ";
     html += "input[type=range]{width:100%; margin:15px 0;}</style></head><body>";
     
-    html += "<h2>Matrix Dashboard V12</h2>";
+    html += String("<h2>Matrix Dashboard V") + currentVersion + "</h2>";
     html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";    
     html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
-    html += "<button class='btn' onclick='fetch(\"/fireplace\")'>Fireplace Mode</button>";
+    html += "<label for='fireMode'>Fireplace Mode:</label>";
+    html += "<select id='fireMode' onchange='setFireMode(this.value)'>";
+    html += "<option value='red'> Red Fire</option>";
+    html += "<option value='blue'> Blue Fire</option>";
+    html += "<option value='green'> Green Fire</option>";
+    html += "</select>";
+    
+    html += "<script>";
+    html += "function setFireMode(mode){ fetch('/fire_' + mode); }";
+    html += "</script>";
 
     html += "<button class='btn' onclick='fetch(\"/phrases\")'>Phrase Mode</button>";
 
@@ -521,6 +546,9 @@ void setupWeb() {
     lastWeatherFetch = 0;
     server.send(200, "text/plain", "OK"); 
   });
+  server.on("/flame_red", [](){ flameMode = 0; server.send(200); });
+  server.on("/flame_blue", [](){ flameMode = 1; server.send(200); });
+  server.on("/flame_green", [](){ flameMode = 2; server.send(200); });
   server.begin();
 }
 
