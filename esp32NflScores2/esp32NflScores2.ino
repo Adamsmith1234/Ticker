@@ -474,6 +474,7 @@ void setupWeb() {
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
     html += "<label for='fireMode'>Fireplace Mode:</label>";
+    html += "<button class='btn' onclick='fetch(\"/fireplace\")'>Fireplace Mode</button>";
     html += "<select id='fireMode' onchange='setFireMode(this.value)'>";
     html += "<option value='red'> Red Fire</option>";
     html += "<option value='blue'> Blue Fire</option>";
