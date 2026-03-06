@@ -482,7 +482,7 @@ void setupWeb() {
     html += "</select>";
     
     html += "<script>";
-    html += "function setFireMode(mode){ fetch('/fire_' + mode); }";
+    html += "function setFireMode(mode){ fetch('/flame_' + mode); }";
     html += "</script>";
 
     html += "<button class='btn' onclick='fetch(\"/phrases\")'>Phrase Mode</button>";

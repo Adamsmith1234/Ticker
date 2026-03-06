@@ -1,2 +1,2 @@
 #pragma once
-#define FIRMWARE_VERSION 15
+#define FIRMWARE_VERSION 16
