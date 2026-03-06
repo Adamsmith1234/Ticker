@@ -281,7 +281,21 @@ void displayFireplace() {
   // 3. The "Embers" (Bottom 4 rows)
   // We force these into the RED/ORANGE range (heat 100-180)
   for(int i = WIDTH * 4; i < WIDTH * HEIGHT; i++) {
-    heat[i] = random8(80, 160); 
+
+    if(flameMode == 2) {
+      // wider range for green flames
+      heat[i] = random8(40, 200);
+    }
+    else {
+      heat[i] = random8(80, 160);
+    }
+
+  }
+
+  if(flameMode == 2){
+    for(int i = WIDTH * 4; i < WIDTH * HEIGHT; i++){
+      heat[i] = qadd8(heat[i], random8(0,30));
+    }
   }
 
   // 4. Random Sparks at the "Log Line" (Row 4)
