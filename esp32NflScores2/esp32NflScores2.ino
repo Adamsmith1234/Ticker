@@ -85,7 +85,7 @@ FastLED_NeoMatrix *matrix;
 static byte heat[WIDTH * HEIGHT]; // Heat memory for every pixel
 
 //0 = red, 1 = green, 2 = blue
-int flameMode = 1;
+int flameMode = 0;
 
 WebServer server(80);
 
@@ -303,11 +303,41 @@ void displayFireplace() {
       }
 
       else if (flameMode == 1){
-        color = CRGB(0, colorIndex/2, colorIndex);
+        byte heatVal = colorIndex;
+
+        if(heatVal < 85) {
+          color = CRGB(0, 0, heatVal * 3);           // deep blue base
+        }
+        else if(heatVal < 170) {
+          heatVal -= 85;
+          color = CRGB(0, heatVal * 3, 255);         // blue → cyan
+        }
+        else {
+          heatVal -= 170;
+          color = CRGB(heatVal * 3, 255, 255);       // cyan → white tips
+        }
+
+        // subtle flicker variation
+        color.b = min(255, color.b + random8(0,30));
       }
 
       else if (flameMode == 2){
-        color =  CRGB(colorIndex/3, colorIndex, 0);
+        byte heatVal = colorIndex;
+
+        if(heatVal < 85) {
+          color = CRGB(0, heatVal * 3, 0);          // deep green base
+        }
+        else if(heatVal < 170) {
+          heatVal -= 85;
+          color = CRGB(heatVal * 3, 255, 0);        // lime / yellow
+        }
+        else {
+          heatVal -= 170;
+          color = CRGB(255, 255, heatVal * 3);      // yellow-white tips
+        }
+
+        // small flicker variation
+        color.g = min(255, color.g + random8(0,40));
       }
       
       
@@ -461,9 +491,12 @@ void setupWeb() {
   server.on("/", []() {
     String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>";
     html += "<style>*{box-sizing: border-box;} "; // FIX: Ensures padding doesn't make boxes wider
-    html += "body{font-family:sans-serif; text-align:center; background:#111; color:#fff; padding:20px;} ";
-    html += ".btn, input[type=text], input[type=color]{width:100%; display:block; margin:10px 0; padding:15px; border-radius:8px; border:none; font-size:1.1em;} ";
+    html += "body{font-family:sans-serif; text-align:center; background:#111; color:#fff; padding:20px; max-width:420px; margin:auto;} ";
+    html += ".btn, input[type=text], input[type=color], select{width:100%; display:block; margin:10px 0; padding:15px; border-radius:8px; border:none; font-size:1.1em;} ";
     html += ".btn{background:#0af; color:#fff; font-weight:bold; cursor:pointer;} ";
+    html += ".btn:hover{background:#09c;} ";
+    html += "h3{margin-top:25px; color:#0af;} ";
+    html += "select{background:#0af; color:#fff; font-weight:bold; cursor:pointer;} ";
     html += ".clear{background:#f44;} ";
     html += "input[type=color]{height:50px; cursor:pointer; background:#333;} ";
     html += "input[type=range]{width:100%; margin:15px 0;}</style></head><body>";
@@ -473,16 +506,16 @@ void setupWeb() {
     html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
-    html += "<label for='fireMode'>Fireplace Mode:</label>";
-    html += "<button class='btn' onclick='fetch(\"/fireplace\")'>Fireplace Mode</button>";
+    html += "<hr><h3>Fireplace</h3>";
+    //html += "<button class='btn' onclick='fetch(\"/fireplace\")'>Fireplace Mode</button>";
     html += "<select id='fireMode' onchange='setFireMode(this.value)'>";
-    html += "<option value='red'> Red Fire</option>";
-    html += "<option value='blue'> Blue Fire</option>";
-    html += "<option value='green'> Green Fire</option>";
+    html += "<option value='red'> Red </option>";
+    html += "<option value='blue'> Blue </option>";
+    html += "<option value='green'> Green </option>";
     html += "</select>";
     
     html += "<script>";
-    html += "function setFireMode(mode){ fetch('/flame_' + mode); }";
+    html += "function setFireMode(mode){ fetch('/fireplace'); fetch('/flame_' + mode); }";
     html += "</script>";
 
     html += "<button class='btn' onclick='fetch(\"/phrases\")'>Phrase Mode</button>";
