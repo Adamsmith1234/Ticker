@@ -324,20 +324,23 @@ void displayFireplace() {
       else if (flameMode == 2){
         byte heatVal = colorIndex;
 
-        if(heatVal < 85) {
-          color = CRGB(0, heatVal * 3, 0);          // deep green base
+        if(heatVal < 120) {
+          // deep green -> bright green
+          color = CRGB(0, heatVal * 2, 0);
         }
-        else if(heatVal < 170) {
-          heatVal -= 85;
-          color = CRGB(heatVal * 3, 255, 0);        // lime / yellow
+        else if(heatVal < 200) {
+          // neon green / lime
+          heatVal -= 120;
+          color = CRGB(heatVal * 2, 200 + heatVal/2, 0);
         }
         else {
-          heatVal -= 170;
-          color = CRGB(255, 255, heatVal * 3);      // yellow-white tips
+          // yellow tips
+          heatVal -= 200;
+          color = CRGB(200 + heatVal * 2, 255, 0);
         }
 
-        // small flicker variation
-        color.g = min(255, color.g + random8(0,40));
+        // flicker variation so flames aren't uniform
+        color.g = min(255, color.g + random8(0,60));
       }
       
       
