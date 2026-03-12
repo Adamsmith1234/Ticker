@@ -519,11 +519,12 @@ void setupWeb() {
     html += "input[type=range]{width:100%; margin:15px 0;}</style></head><body>";
     
     html += String("<h2>Matrix Dashboard V") + currentVersion + "</h2>";
-    html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";    
+    html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";  
+    html += "<hr><h3>Basic Modes</h3>";  
     html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
-    html += "<hr><h3>Fireplace</h3>";
+    html += "<hr><h3>Fireplace Mode</h3>";
     //html += "<button class='btn' onclick='fetch(\"/fireplace\")'>Fireplace Mode</button>";
     html += "<select id='fireMode' onchange='setFireMode(this.value)'>";
     html += "<option value='red'> Red </option>";
@@ -535,9 +536,8 @@ void setupWeb() {
     html += "function setFireMode(mode){ fetch('/fireplace'); fetch('/flame_' + mode); }";
     html += "</script>";
 
+    html += "<hr><h3>Phrase Mode</h3>";
     html += "<button class='btn' onclick='fetch(\"/phrases\")'>Phrase Mode</button>";
-
-    html += "<hr><h3>Phrase Settings</h3>";
     html += "<input type='text' id='p' placeholder='Type phrase here...'>";
     html += "<button class='btn' onclick='fetch(\"/add?v=\"+encodeURIComponent(document.getElementById(\"p\").value)); document.getElementById(\"p\").value=\"\"'>Add to List</button>";
     
