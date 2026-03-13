@@ -71,7 +71,7 @@ void checkForUpdates() {
 }
 
 #define DATA_PIN 13 
-#define WIDTH 64
+#define WIDTH 96
 #define HEIGHT 8
 #define NUM_LEDS (WIDTH * HEIGHT)
 
