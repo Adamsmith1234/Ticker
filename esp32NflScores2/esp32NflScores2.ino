@@ -13,6 +13,7 @@
 #include <ArduinoJson.h>
 #include <WiFiManager.h> // 
 #include <ESPmDNS.h>
+#include <version.h>
 
 /* ================= CONFIG ================= */
 
@@ -20,7 +21,7 @@
 #include <WiFiClientSecure.h>
 
 // Increase this number every time you push a new update to GitHub
-const int currentVersion = 7; 
+const int currentVersion = FIRMWARE_VERSION; 
 
 // Replace with your GitHub Username and Repo name
 const String baseUrl = "https://raw.githubusercontent.com/Adamsmith1234/Ticker/southwick/";
@@ -82,6 +83,9 @@ FastLED_NeoMatrix *matrix;
 #define COOLING  60   // Higher = shorter flames
 #define SPARKING 140  // Higher = more random sparks
 static byte heat[WIDTH * HEIGHT]; // Heat memory for every pixel
+
+//0 = red, 1 = green, 2 = blue
+int flameMode = 0;
 
 WebServer server(80);
 
@@ -277,7 +281,21 @@ void displayFireplace() {
   // 3. The "Embers" (Bottom 4 rows)
   // We force these into the RED/ORANGE range (heat 100-180)
   for(int i = WIDTH * 4; i < WIDTH * HEIGHT; i++) {
-    heat[i] = random8(80, 160); 
+
+    if(flameMode == 2) {
+      // wider range for green flames
+      heat[i] = random8(40, 200);
+    }
+    else {
+      heat[i] = random8(80, 160);
+    }
+
+  }
+
+  if(flameMode == 2){
+    for(int i = WIDTH * 4; i < WIDTH * HEIGHT; i++){
+      heat[i] = qadd8(heat[i], random8(0,30));
+    }
   }
 
   // 4. Random Sparks at the "Log Line" (Row 4)
@@ -290,12 +308,58 @@ void displayFireplace() {
   for(int y = 0; y < HEIGHT; y++) {
     for(int x = 0; x < WIDTH; x++) {
       byte colorIndex = heat[y * WIDTH + x];
-      
+      CRGB color;
+
       // Use HeatColor but cap the intensity so it doesn't stay white/yellow
-      CRGB color = HeatColor(colorIndex);
+
+      if (flameMode == 0){
+        color = HeatColor(colorIndex);
+      }
+
+      else if (flameMode == 1){
+        byte heatVal = colorIndex;
+
+        if(heatVal < 85) {
+          color = CRGB(0, 0, heatVal * 3);           // deep blue base
+        }
+        else if(heatVal < 170) {
+          heatVal -= 85;
+          color = CRGB(0, heatVal * 3, 255);         // blue → cyan
+        }
+        else {
+          heatVal -= 170;
+          color = CRGB(heatVal * 3, 255, 255);       // cyan → white tips
+        }
+
+        // subtle flicker variation
+        color.b = min(255, color.b + random8(0,30));
+      }
+
+      else if (flameMode == 2){
+        byte heatVal = colorIndex;
+
+        if(heatVal < 120) {
+          // deep green -> bright green
+          color = CRGB(0, heatVal * 2, 0);
+        }
+        else if(heatVal < 200) {
+          // neon green / lime
+          heatVal -= 120;
+          color = CRGB(heatVal * 2, 200 + heatVal/2, 0);
+        }
+        else {
+          // yellow tips
+          heatVal -= 200;
+          color = CRGB(200 + heatVal * 2, 255, 0);
+        }
+
+        // flicker variation so flames aren't uniform
+        color.g = min(255, color.g + random8(0,60));
+      }
+      
       
       // OPTIONAL: Boost the Red channel slightly for extra warmth
-      if(color.r > 0) color.r = qadd8(color.r, 20); 
+      //if(color.r > 0) color.r = qadd8(color.r, 20); 
 
       matrix->drawPixel(x, y, matrix->Color(color.r, color.g, color.b));
     }
@@ -445,23 +509,36 @@ void setupWeb() {
   server.on("/", []() {
     String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>";
     html += "<style>*{box-sizing: border-box;} "; // FIX: Ensures padding doesn't make boxes wider
-    html += "body{font-family:sans-serif; text-align:center; background:#111; color:#fff; padding:20px;} ";
-    html += ".btn, input[type=text], input[type=color]{width:100%; display:block; margin:10px 0; padding:15px; border-radius:8px; border:none; font-size:1.1em;} ";
+    html += "body{font-family:sans-serif; text-align:center; background:#111; color:#fff; padding:20px; max-width:420px; margin:auto;} ";
+    html += ".btn, input[type=text], input[type=color], select{width:100%; display:block; margin:10px 0; padding:15px; border-radius:8px; border:none; font-size:1.1em;} ";
     html += ".btn{background:#0af; color:#fff; font-weight:bold; cursor:pointer;} ";
+    html += ".btn:hover{background:#09c;} ";
+    html += "h3{margin-top:25px; color:#0af;} ";
+    html += "select{background:#0af; color:#fff; font-weight:bold; cursor:pointer;} ";
     html += ".clear{background:#f44;} ";
     html += "input[type=color]{height:50px; cursor:pointer; background:#333;} ";
     html += "input[type=range]{width:100%; margin:15px 0;}</style></head><body>";
     
-    html += "<h2>Matrix Dashboard</h2>";
-    html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";    
+    html += String("<h2>Matrix Dashboard V") + currentVersion + "</h2>";
+    html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";  
+    html += "<hr><h3>Basic Modes</h3>";  
     html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
-    html += "<button class='btn' onclick='fetch(\"/fireplace\")'>Fireplace Mode</button>";
+    html += "<hr><h3>Fireplace Mode</h3>";
+    //html += "<button class='btn' onclick='fetch(\"/fireplace\")'>Fireplace Mode</button>";
+    html += "<select id='fireMode' onchange='setFireMode(this.value)'>";
+    html += "<option value='red'> Red </option>";
+    html += "<option value='blue'> Blue </option>";
+    html += "<option value='green'> Green </option>";
+    html += "</select>";
+    
+    html += "<script>";
+    html += "function setFireMode(mode){ fetch('/fireplace'); fetch('/flame_' + mode); }";
+    html += "</script>";
 
+    html += "<hr><h3>Phrase Mode</h3>";
     html += "<button class='btn' onclick='fetch(\"/phrases\")'>Phrase Mode</button>";
-
-    html += "<hr><h3>Phrase Settings</h3>";
     html += "<input type='text' id='p' placeholder='Type phrase here...'>";
     html += "<button class='btn' onclick='fetch(\"/add?v=\"+encodeURIComponent(document.getElementById(\"p\").value)); document.getElementById(\"p\").value=\"\"'>Add to List</button>";
     
@@ -521,6 +598,9 @@ void setupWeb() {
     lastWeatherFetch = 0;
     server.send(200, "text/plain", "OK"); 
   });
+  server.on("/flame_red", [](){ flameMode = 0; server.send(200); });
+  server.on("/flame_blue", [](){ flameMode = 1; server.send(200); });
+  server.on("/flame_green", [](){ flameMode = 2; server.send(200); });
   server.begin();
 }
 
@@ -549,6 +629,7 @@ void setup() {
 
   checkForUpdates();
   setupWeb();
+  Serial.printf("Free sketch space: %u\n", ESP.getFreeSketchSpace());
 }
 
 void loop() {
