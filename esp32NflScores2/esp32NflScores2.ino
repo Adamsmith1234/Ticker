@@ -20,7 +20,7 @@
 #include <WiFiClientSecure.h>
 
 // Increase this number every time you push a new update to GitHub
-const int currentVersion = 6; 
+const int currentVersion = 7; 
 
 // Replace with your GitHub Username and Repo name
 const String baseUrl = "https://raw.githubusercontent.com/Adamsmith1234/Ticker/southwick/";
@@ -71,7 +71,7 @@ void checkForUpdates() {
 }
 
 #define DATA_PIN 13 
-#define WIDTH 64
+#define WIDTH 96
 #define HEIGHT 8
 #define NUM_LEDS (WIDTH * HEIGHT)
 
