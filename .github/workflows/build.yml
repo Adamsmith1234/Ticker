@@ -3,7 +3,7 @@ name: Build and Deploy ESP32 Firmware
 on:
   push:
     branches:
-      - main
+      - southwick
 
 permissions:
   contents: write
