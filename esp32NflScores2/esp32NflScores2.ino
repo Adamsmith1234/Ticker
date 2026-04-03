@@ -387,11 +387,13 @@ void displayFireplace() {
 
 
 void displayArtemis() {
-
-  if (!artemisLoaded) return;
+  // Use a non-blocking timer instead of delay(3000)
+  static unsigned long lastArtemisDisplay = 0;
+  if (millis() - lastArtemisDisplay < 3000) return; 
+  lastArtemisDisplay = millis();
 
   matrix->fillScreen(0);
-
+  
   // --- Title ---
   matrix->setCursor(0,0);
   matrix->setTextColor(matrix->Color(255,255,255));
@@ -399,7 +401,8 @@ void displayArtemis() {
 
   // --- Progress bar ---
   int barWidth = 96;
-  int filled = (int)(artemis.percent / 100.0 * barWidth);
+  // Use the global artemisPercent variable updated by fetchArtemis()
+  int filled = (int)(artemisPercent / 100.0 * barWidth);
 
   for (int i = 0; i < filled; i++) {
     matrix->drawPixel(i, 7, matrix->Color(0,255,0));
@@ -409,8 +412,7 @@ void displayArtemis() {
   matrix->drawPixel(95,7, matrix->Color(150,150,150));
 
   matrix->show();
-  delay(3000);
-}  
+}
 /* ================= FETCH LOGIC ================= */
 void fetchScores() {
   WiFiClientSecure client; client.setInsecure();
@@ -453,26 +455,27 @@ void fetchStocks() {
 }
 
 void fetchArtemis() {
-
   WiFiClientSecure client;
   client.setInsecure();
-
   HTTPClient http;
 
   if (http.begin(client, "https://artemis.adamjsmith002.workers.dev/")) {
-
-    if (http.GET() == 200) {
-
-      StaticJsonDocument<256> doc;
+    int httpCode = http.GET();
+    if (httpCode == 200) {
+      // Increased size slightly to be safe with float strings
+      StaticJsonDocument<512> doc; 
       deserializeJson(doc, http.getString());
 
-      artemisDistance = doc["distance_mi"];
-      artemisVelocity = doc["velocity_mis"];
-      artemisPercent  = doc["pct_to_moon"];
+      // Match the keys being sent by your Cloudflare Worker
+      artemisDistance = doc["distance_mi"] | 0.0f;
+      artemisVelocity = doc["velocity_mis"] | 0.0f;
+      artemisPercent  = doc["pct_to_moon"] | 0.0f;
 
-      Serial.println("Artemis updated");
+      artemisLoaded = true; // Mark as loaded so displayArtemis() starts showing
+      Serial.println("Artemis updated successfully");
+    } else {
+      Serial.printf("Artemis Fetch Failed, code: %d\n", httpCode);
     }
-
     http.end();
   }
 }
