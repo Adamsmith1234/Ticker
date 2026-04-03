@@ -90,7 +90,7 @@ int flameMode = 0;
 WebServer server(80);
 
 /* ================= MODES & SETTINGS ================= */
-enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE };
+enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE, MODE_ARTEMIS };
 volatile DisplayMode currentMode = MODE_CYCLE;
 
 volatile int currentBrightness = 40;
@@ -135,6 +135,23 @@ Weather localWeather;
 unsigned long lastWeatherFetch = 0;
 bool weatherLoaded = false;
 
+
+// ARTEMIS
+/* ================= ARTEMIS ================= */
+
+struct Artemis {
+  float distance;
+  float velocity;
+  float percent;
+};
+
+Artemis artemis;
+unsigned long lastArtemisFetch = 0;
+bool artemisLoaded = false;
+
+float artemisDistance = 0;
+float artemisVelocity = 0;
+float artemisPercent  = 0;
 
 const uint8_t PROGMEM sun_bmp[] = {0x18,0x3C,0x7E,0x7E,0x7E,0x7E,0x3C,0x18};
 const uint8_t PROGMEM cloud_bmp[] = {0x00,0x06,0x1F,0x3F,0x7F,0x7F,0x3F,0x00};
@@ -367,6 +384,33 @@ void displayFireplace() {
   matrix->show();
   delay(60); // Slower speed makes the "rising" look more like real fire
 }
+
+
+void displayArtemis() {
+
+  if (!artemisLoaded) return;
+
+  matrix->fillScreen(0);
+
+  // --- Title ---
+  matrix->setCursor(0,0);
+  matrix->setTextColor(matrix->Color(255,255,255));
+  matrix->print("ARTEMIS");
+
+  // --- Progress bar ---
+  int barWidth = 96;
+  int filled = (int)(artemis.percent / 100.0 * barWidth);
+
+  for (int i = 0; i < filled; i++) {
+    matrix->drawPixel(i, 7, matrix->Color(0,255,0));
+  }
+
+  // --- Moon marker ---
+  matrix->drawPixel(95,7, matrix->Color(150,150,150));
+
+  matrix->show();
+  delay(3000);
+}  
 /* ================= FETCH LOGIC ================= */
 void fetchScores() {
   WiFiClientSecure client; client.setInsecure();
@@ -404,6 +448,31 @@ void fetchStocks() {
       }
       lastStockFetch = millis();
     }
+    http.end();
+  }
+}
+
+void fetchArtemis() {
+
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+
+  if (http.begin(client, "https://artemis.adamjsmith002.workers.dev/")) {
+
+    if (http.GET() == 200) {
+
+      StaticJsonDocument<256> doc;
+      deserializeJson(doc, http.getString());
+
+      artemisDistance = doc["distance_mi"];
+      artemisVelocity = doc["velocity_mis"];
+      artemisPercent  = doc["pct_to_moon"];
+
+      Serial.println("Artemis updated");
+    }
+
     http.end();
   }
 }
@@ -521,7 +590,8 @@ void setupWeb() {
     html += String("<h2>Matrix Dashboard V") + currentVersion + "</h2>";
     html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";  
     html += "<hr><h3>Basic Modes</h3>";  
-    html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
+    //html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
+    html += "<button class='btn' onclick='fetch(\"/artemis\")'>Artemis Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
     html += "<hr><h3>Fireplace Mode</h3>";
@@ -569,6 +639,7 @@ void setupWeb() {
   });
 
   // ... keep your other handlers (/nfl, /stocks, /phrases, /add, /clear, /brightness, /speed) ...
+  server.on("/artemis", [](){ currentMode = MODE_ARTEMIS; lastArtemisFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/nfl", [](){ currentMode = MODE_NFL; lastNFLFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/stocks", [](){ currentMode = MODE_STOCKS; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/weather", [](){ currentMode = MODE_WEATHER; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
@@ -664,15 +735,32 @@ void loop() {
     displayFireplace();
   }
 
+  else if (currentMode == MODE_ARTEMIS) {
+
+    if (millis() - lastArtemisFetch > 60000) {
+      lastArtemisFetch = millis();
+      fetchArtemis();
+    }
+
+    displayArtemis();
+  }
+
   else if (currentMode == MODE_CYCLE) {
-    static int cycleStage = 0; // 0:NFL, 1:Stock, 2:Phrase, 3:Weather
+    static int cycleStage = 0; // 0:NFL but now Artemis, 1:Stock, 2:Phrase, 3:Weather
     
     if (cycleStage == 0) {
-      if (currentGame == 0 && (millis() - lastNFLFetch > 60000 || lastNFLFetch == 0)) fetchScores();
-      if (gameCount > 0) { 
-        displayNFLGame(currentGame++); 
-        if (currentGame >= gameCount) { currentGame = 0; cycleStage = 1; }
-      } else { cycleStage = 1; }
+      //if (currentGame == 0 && (millis() - lastNFLFetch > 60000 || lastNFLFetch == 0)) fetchScores();
+      //if (gameCount > 0) { 
+        //displayNFLGame(currentGame++); 
+        //if (currentGame >= gameCount) { currentGame = 0; cycleStage = 1; }
+      //} else { cycleStage = 1; }
+      if (millis() - lastArtemisFetch > 60000) {
+        lastArtemisFetch = millis();
+        fetchArtemis();
+      }
+
+      displayArtemis();
+      cycleStage = 1;
     } 
     else if (cycleStage == 1) {
       if (currentStock == 0 && (millis() - lastStockFetch > 60000 || lastStockFetch == 0)) fetchStocks();
