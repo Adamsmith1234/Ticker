@@ -386,32 +386,56 @@ void displayFireplace() {
 }
 
 
-void displayArtemis() {
-  // Use a non-blocking timer instead of delay(3000)
-  static unsigned long lastArtemisDisplay = 0;
-  if (millis() - lastArtemisDisplay < 3000) return; 
-  lastArtemisDisplay = millis();
+bool displayArtemis() {
+  if (!artemisLoaded) return false;
 
+  static int scrollX = WIDTH;
   matrix->fillScreen(0);
   
-  // --- Title ---
-  matrix->setCursor(0,0);
-  matrix->setTextColor(matrix->Color(255,255,255));
-  matrix->print("ARTEMIS");
+  // 1. Create the info string
+  String info = "Dist: " + String((long)artemisDistance) + " mi away |  Vel: " + String(artemisVelocity * 60 * 60) + " mph";
+  int minX = -((int)info.length() * 6);
 
-  // --- Progress bar ---
+  // 2. Print the scrolling info on the top row
+  matrix->setCursor(scrollX, 0);
+  matrix->setTextColor(matrix->Color(255, 255, 255));
+  matrix->print(info);
+
+  // 3. Draw the Progress Bar on the bottom row (row 7)
   int barWidth = 96;
-  // Use the global artemisPercent variable updated by fetchArtemis()
   int filled = (int)(artemisPercent / 100.0 * barWidth);
-
-  for (int i = 0; i < filled; i++) {
-    matrix->drawPixel(i, 7, matrix->Color(0,255,0));
+  
+  // Draw the static part of the bar (all dots except the very last one)
+  for (int i = 0; i < (filled - 1); i++) {
+    matrix->drawPixel(i, 7, matrix->Color(0, 255, 0));
   }
 
-  // --- Moon marker ---
-  matrix->drawPixel(95,7, matrix->Color(150,150,150));
+  // Blinking logic for the "furthest" dot (the tip of the progress bar)
+  // Blinks every 500ms
+  if ((millis() / 500) % 2 == 0 && filled > 0) {
+    matrix->drawPixel(filled - 1, 7, matrix->Color(0, 255, 0));
+  }
+
+  // 4. Fixed corner dots
+  matrix->drawPixel(0, 7, matrix->Color(0, 0, 255));   // Bottom Left: Blue
+  matrix->drawPixel(95, 7, matrix->Color(255, 255, 255)); // Bottom Right: White (Moon/Target)
 
   matrix->show();
+
+  // Handle scrolling logic
+  static unsigned long lastScroll = 0;
+  if (millis() - lastScroll > scrollDelay) {
+    scrollX--;
+    lastScroll = millis();
+  }
+
+  // Check if the scroll has finished
+  if (scrollX < minX) {
+    scrollX = WIDTH; 
+    return true;     
+  }
+  
+  return false; 
 }
 /* ================= FETCH LOGIC ================= */
 void fetchScores() {
@@ -467,12 +491,14 @@ void fetchArtemis() {
       deserializeJson(doc, http.getString());
 
       // Match the keys being sent by your Cloudflare Worker
-      artemisDistance = doc["distance_mi"] | 0.0f;
-      artemisVelocity = doc["velocity_mis"] | 0.0f;
-      artemisPercent  = doc["pct_to_moon"] | 0.0f;
+      artemisDistance = doc["distance"] | 0.0f;
+      artemisVelocity = doc["velocity"] | 0.0f;
+      artemisPercent  = doc["percent"]  | 0.0f;
 
       artemisLoaded = true; // Mark as loaded so displayArtemis() starts showing
       Serial.println("Artemis updated successfully");
+      Serial.println(artemisDistance);
+      Serial.println(artemisVelocity);
     } else {
       Serial.printf("Artemis Fetch Failed, code: %d\n", httpCode);
     }
@@ -740,7 +766,7 @@ void loop() {
 
   else if (currentMode == MODE_ARTEMIS) {
 
-    if (millis() - lastArtemisFetch > 60000) {
+    if (lastArtemisFetch == 0 || millis() - lastArtemisFetch > 60000) {
       lastArtemisFetch = millis();
       fetchArtemis();
     }
@@ -751,27 +777,26 @@ void loop() {
   else if (currentMode == MODE_CYCLE) {
     static int cycleStage = 0; // 0:NFL but now Artemis, 1:Stock, 2:Phrase, 3:Weather
     
-    if (cycleStage == 0) {
-      //if (currentGame == 0 && (millis() - lastNFLFetch > 60000 || lastNFLFetch == 0)) fetchScores();
-      //if (gameCount > 0) { 
-        //displayNFLGame(currentGame++); 
-        //if (currentGame >= gameCount) { currentGame = 0; cycleStage = 1; }
-      //} else { cycleStage = 1; }
-      if (millis() - lastArtemisFetch > 60000) {
+    if (cycleStage == 0) { // ARTEMIS
+      if (lastArtemisFetch == 0 || millis() - lastArtemisFetch > 60000) {
         lastArtemisFetch = millis();
         fetchArtemis();
       }
 
-      displayArtemis();
-      cycleStage = 1;
+      // Call the function and check if it returns 'true' (finished)
+      if (displayArtemis()) {
+        cycleStage = 1; // Move to Stocks only after one full scroll
+      }
     } 
-    else if (cycleStage == 1) {
+
+    else if (cycleStage == 1) { // STOCKS
       if (currentStock == 0 && (millis() - lastStockFetch > 60000 || lastStockFetch == 0)) fetchStocks();
       if (stockCount > 0) { 
         displayStock(currentStock++); 
         if (currentStock >= stockCount) { currentStock = 0; cycleStage = 2; }
       } else { cycleStage = 2; }
     }
+
     else if (cycleStage == 2) {
       if (phraseCount > 0) { 
         displayPhrase(currentPhrase++); 
