@@ -90,7 +90,7 @@ int flameMode = 0;
 WebServer server(80);
 
 /* ================= MODES & SETTINGS ================= */
-enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE, MODE_ARTEMIS };
+enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE };
 volatile DisplayMode currentMode = MODE_CYCLE;
 
 volatile int currentBrightness = 40;
@@ -137,21 +137,7 @@ bool weatherLoaded = false;
 
 
 // ARTEMIS
-/* ================= ARTEMIS ================= */
 
-struct Artemis {
-  float distance;
-  float velocity;
-  float percent;
-};
-
-Artemis artemis;
-unsigned long lastArtemisFetch = 0;
-bool artemisLoaded = false;
-
-float artemisDistance = 0;
-float artemisVelocity = 0;
-float artemisPercent  = 0;
 
 const uint8_t PROGMEM sun_bmp[] = {0x18,0x3C,0x7E,0x7E,0x7E,0x7E,0x3C,0x18};
 const uint8_t PROGMEM cloud_bmp[] = {0x00,0x06,0x1F,0x3F,0x7F,0x7F,0x3F,0x00};
@@ -182,6 +168,7 @@ void getTeamColor(const String &abbr, uint8_t &r, uint8_t &g, uint8_t &b) {
 /* ================= DISPLAY FUNCTIONS ================= */
 void displayNFLGame(int idx) {
   Game &g = games[idx];
+  Serial.printf("[NFL] displayNFLGame start idx=%d gameCount=%d\n", idx, gameCount);
   String line = g.awayAbbr + ":" + g.awayScore + " - " + g.homeAbbr + ":" + g.homeScore;
   int x = WIDTH, minX = -((int)line.length() * 6);
   while (x > minX && (currentMode == MODE_NFL || currentMode == MODE_CYCLE)) {
@@ -192,6 +179,7 @@ void displayNFLGame(int idx) {
     matrix->setTextColor(matrix->Color(g.hr, g.hg, g.hb)); matrix->print(g.homeAbbr + ":" + g.homeScore);
     matrix->show(); x--; delay(scrollDelay);
   }
+  Serial.println("[NFL] displayNFLGame end");
 }
 
 void displayStock(int idx) {
@@ -386,77 +374,41 @@ void displayFireplace() {
 }
 
 
-bool displayArtemis() {
-  if (!artemisLoaded) return false;
 
-  static int scrollX = WIDTH;
-  matrix->fillScreen(0);
-  
-  // 1. Create the info string
-  String info = "Dist: " + String((long)artemisDistance) + " mi away |  Vel: " + String(artemisVelocity * 60 * 60) + " mph";
-  int minX = -((int)info.length() * 6);
-
-  // 2. Print the scrolling info on the top row
-  matrix->setCursor(scrollX, 0);
-  matrix->setTextColor(matrix->Color(255, 255, 255));
-  matrix->print(info);
-
-  // 3. Draw the Progress Bar on the bottom row (row 7)
-  int barWidth = 96;
-  int filled = (int)(artemisPercent / 100.0 * barWidth);
-  
-  // Draw the static part of the bar (all dots except the very last one)
-  for (int i = 0; i < (filled - 1); i++) {
-    matrix->drawPixel(i, 7, matrix->Color(0, 255, 0));
-  }
-
-  // Blinking logic for the "furthest" dot (the tip of the progress bar)
-  // Blinks every 500ms
-  if ((millis() / 500) % 2 == 0 && filled > 0) {
-    matrix->drawPixel(filled - 1, 7, matrix->Color(0, 255, 0));
-  }
-
-  // 4. Fixed corner dots
-  matrix->drawPixel(0, 7, matrix->Color(0, 0, 255));   // Bottom Left: Blue
-  matrix->drawPixel(95, 7, matrix->Color(255, 255, 255)); // Bottom Right: White (Moon/Target)
-
-  matrix->show();
-
-  // Handle scrolling logic
-  static unsigned long lastScroll = 0;
-  if (millis() - lastScroll > scrollDelay) {
-    scrollX--;
-    lastScroll = millis();
-  }
-
-  // Check if the scroll has finished
-  if (scrollX < minX) {
-    scrollX = WIDTH; 
-    return true;     
-  }
-  
-  return false; 
-}
 /* ================= FETCH LOGIC ================= */
 void fetchScores() {
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
+  Serial.println("[NFL] fetchScores start");
   if (http.begin(client, "https://espnscraper.adamjsmith002.workers.dev/")) {
-    if (http.GET() == 200) {
+    int httpCode = http.GET();
+    Serial.printf("[NFL] HTTP GET code: %d\n", httpCode);
+    if (httpCode == 200) {
+      String payload = http.getString();
+      Serial.printf("[NFL] payload length: %u\n", (unsigned)payload.length());
       DynamicJsonDocument doc(32768);
-      deserializeJson(doc, http.getString());
-      gameCount = 0;
-      for (JsonVariant v : doc.as<JsonArray>()) {
-        if (gameCount >= MAX_GAMES) break;
-        String away = v["away"]["team"] | ""; String home = v["home"]["team"] | "";
-        if (away == "" || home == "") continue;
-        uint8_t ar,ag,ab, hr,hg,hb;
-        getTeamColor(away, ar,ag,ab); getTeamColor(home, hr,hg,hb);
-        games[gameCount++] = {away, v["away"]["score"]|"", home, v["home"]["score"]|"", ar,ag,ab, hr,hg,hb};
+      DeserializationError err = deserializeJson(doc, payload);
+      if (err) {
+        Serial.print("[NFL] JSON parse error: "); Serial.println(err.c_str());
+      } else {
+        gameCount = 0;
+        for (JsonVariant v : doc.as<JsonArray>()) {
+          if (gameCount >= MAX_GAMES) break;
+          String away = v["away"]["team"] | ""; String home = v["home"]["team"] | "";
+          if (away == "" || home == "") continue;
+          uint8_t ar,ag,ab, hr,hg,hb;
+          getTeamColor(away, ar,ag,ab); getTeamColor(home, hr,hg,hb);
+          games[gameCount++] = {away, v["away"]["score"]|"", home, v["home"]["score"]|"", ar,ag,ab, hr,hg,hb};
+        }
+        Serial.printf("[NFL] parsed games: %d\n", gameCount);
+        lastNFLFetch = millis();
       }
-      lastNFLFetch = millis();
+    } else {
+      Serial.println("[NFL] HTTP GET failed or returned non-200");
     }
     http.end();
+  } else {
+    Serial.println("[NFL] http.begin failed");
   }
 }
 
@@ -478,33 +430,6 @@ void fetchStocks() {
   }
 }
 
-void fetchArtemis() {
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-
-  if (http.begin(client, "https://artemis.adamjsmith002.workers.dev/")) {
-    int httpCode = http.GET();
-    if (httpCode == 200) {
-      // Increased size slightly to be safe with float strings
-      StaticJsonDocument<512> doc; 
-      deserializeJson(doc, http.getString());
-
-      // Match the keys being sent by your Cloudflare Worker
-      artemisDistance = doc["distance"] | 0.0f;
-      artemisVelocity = doc["velocity"] | 0.0f;
-      artemisPercent  = doc["percent"]  | 0.0f;
-
-      artemisLoaded = true; // Mark as loaded so displayArtemis() starts showing
-      Serial.println("Artemis updated successfully");
-      Serial.println(artemisDistance);
-      Serial.println(artemisVelocity);
-    } else {
-      Serial.printf("Artemis Fetch Failed, code: %d\n", httpCode);
-    }
-    http.end();
-  }
-}
 
 void fetchWeather() {
   WiFiClientSecure client;
@@ -620,8 +545,7 @@ void setupWeb() {
     html += String("<h2>Matrix Dashboard V") + currentVersion + "</h2>";
     html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";  
     html += "<hr><h3>Basic Modes</h3>";  
-    //html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
-    html += "<button class='btn' onclick='fetch(\"/artemis\")'>Artemis Mode</button>";
+    html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
     html += "<hr><h3>Fireplace Mode</h3>";
@@ -669,7 +593,6 @@ void setupWeb() {
   });
 
   // ... keep your other handlers (/nfl, /stocks, /phrases, /add, /clear, /brightness, /speed) ...
-  server.on("/artemis", [](){ currentMode = MODE_ARTEMIS; lastArtemisFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/nfl", [](){ currentMode = MODE_NFL; lastNFLFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/stocks", [](){ currentMode = MODE_STOCKS; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/weather", [](){ currentMode = MODE_WEATHER; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
@@ -765,29 +688,15 @@ void loop() {
     displayFireplace();
   }
 
-  else if (currentMode == MODE_ARTEMIS) {
-
-    if (lastArtemisFetch == 0 || millis() - lastArtemisFetch > 60000) {
-      lastArtemisFetch = millis();
-      fetchArtemis();
-    }
-
-    displayArtemis();
-  }
-
   else if (currentMode == MODE_CYCLE) {
     static int cycleStage = 0; // 0:NFL but now Artemis, 1:Stock, 2:Phrase, 3:Weather
     
-    if (cycleStage == 0) { // ARTEMIS
-      if (lastArtemisFetch == 0 || millis() - lastArtemisFetch > 60000) {
-        lastArtemisFetch = millis();
-        fetchArtemis();
-      }
-
-      // Call the function and check if it returns 'true' (finished)
-      if (displayArtemis()) {
-        cycleStage = 1; // Move to Stocks only after one full scroll
-      }
+    if (cycleStage == 0) {
+      if (currentGame == 0 && (millis() - lastNFLFetch > 60000 || lastNFLFetch == 0)) fetchScores();
+      if (gameCount > 0) { 
+        displayNFLGame(currentGame++); 
+        if (currentGame >= gameCount) { currentGame = 0; cycleStage = 1; }
+      } else { cycleStage = 1; }
     } 
 
     else if (cycleStage == 1) { // STOCKS
