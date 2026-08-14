@@ -168,6 +168,7 @@ void getTeamColor(const String &abbr, uint8_t &r, uint8_t &g, uint8_t &b) {
 /* ================= DISPLAY FUNCTIONS ================= */
 void displayNFLGame(int idx) {
   Game &g = games[idx];
+  Serial.printf("[NFL] displayNFLGame start idx=%d gameCount=%d\n", idx, gameCount);
   String line = g.awayAbbr + ":" + g.awayScore + " - " + g.homeAbbr + ":" + g.homeScore;
   int x = WIDTH, minX = -((int)line.length() * 6);
   while (x > minX && (currentMode == MODE_NFL || currentMode == MODE_CYCLE)) {
@@ -178,6 +179,7 @@ void displayNFLGame(int idx) {
     matrix->setTextColor(matrix->Color(g.hr, g.hg, g.hb)); matrix->print(g.homeAbbr + ":" + g.homeScore);
     matrix->show(); x--; delay(scrollDelay);
   }
+  Serial.println("[NFL] displayNFLGame end");
 }
 
 void displayStock(int idx) {
@@ -377,22 +379,36 @@ void displayFireplace() {
 void fetchScores() {
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
+  Serial.println("[NFL] fetchScores start");
   if (http.begin(client, "https://espnscraper.adamjsmith002.workers.dev/")) {
-    if (http.GET() == 200) {
+    int httpCode = http.GET();
+    Serial.printf("[NFL] HTTP GET code: %d\n", httpCode);
+    if (httpCode == 200) {
+      String payload = http.getString();
+      Serial.printf("[NFL] payload length: %u\n", (unsigned)payload.length());
       DynamicJsonDocument doc(32768);
-      deserializeJson(doc, http.getString());
-      gameCount = 0;
-      for (JsonVariant v : doc.as<JsonArray>()) {
-        if (gameCount >= MAX_GAMES) break;
-        String away = v["away"]["team"] | ""; String home = v["home"]["team"] | "";
-        if (away == "" || home == "") continue;
-        uint8_t ar,ag,ab, hr,hg,hb;
-        getTeamColor(away, ar,ag,ab); getTeamColor(home, hr,hg,hb);
-        games[gameCount++] = {away, v["away"]["score"]|"", home, v["home"]["score"]|"", ar,ag,ab, hr,hg,hb};
+      DeserializationError err = deserializeJson(doc, payload);
+      if (err) {
+        Serial.print("[NFL] JSON parse error: "); Serial.println(err.c_str());
+      } else {
+        gameCount = 0;
+        for (JsonVariant v : doc.as<JsonArray>()) {
+          if (gameCount >= MAX_GAMES) break;
+          String away = v["away"]["team"] | ""; String home = v["home"]["team"] | "";
+          if (away == "" || home == "") continue;
+          uint8_t ar,ag,ab, hr,hg,hb;
+          getTeamColor(away, ar,ag,ab); getTeamColor(home, hr,hg,hb);
+          games[gameCount++] = {away, v["away"]["score"]|"", home, v["home"]["score"]|"", ar,ag,ab, hr,hg,hb};
+        }
+        Serial.printf("[NFL] parsed games: %d\n", gameCount);
+        lastNFLFetch = millis();
       }
-      lastNFLFetch = millis();
+    } else {
+      Serial.println("[NFL] HTTP GET failed or returned non-200");
     }
     http.end();
+  } else {
+    Serial.println("[NFL] http.begin failed");
   }
 }
 
