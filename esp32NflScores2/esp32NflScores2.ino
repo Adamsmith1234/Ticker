@@ -28,8 +28,12 @@ const String baseUrl = "https://raw.githubusercontent.com/Adamsmith1234/Ticker/s
 const String versionUrl = baseUrl + "version.txt";
 const String binaryUrl  = baseUrl + "firmware.bin";
 
+enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE };
+volatile DisplayMode currentMode = MODE_CYCLE;
+
 void checkForUpdates() {
   Serial.println("Checking for updates...");
+  addDebugLog("Checking for firmware updates");
   WiFiClientSecure client;
   client.setInsecure(); 
 
@@ -47,6 +51,7 @@ void checkForUpdates() {
 
     if (newVersion > currentVersion) {
       Serial.println("New version found! Starting update...");
+      addDebugLog("Firmware update available; starting update");
       
       // The update() function handles the download and will automatically reboot on success
       t_httpUpdate_return ret = httpUpdate.update(client, binaryUrl);
@@ -64,6 +69,7 @@ void checkForUpdates() {
       }
     } else {
       Serial.println("Software is up to date.");
+      addDebugLog("Firmware is up to date");
     }
   } else {
     Serial.printf("Failed to check version. HTTP Code: %d\n", httpCode);
@@ -89,9 +95,42 @@ int flameMode = 0;
 
 WebServer server(80);
 
+/* ================= DEBUG LOGGING ================= */
+// Recent logs are kept in RAM and shown at /logs.
+#define MAX_DEBUG_LOGS 40
+String debugLogs[MAX_DEBUG_LOGS];
+int debugLogCount = 0;
+int debugLogNext = 0;
+
+void addDebugLog(const String &message) {
+  String entry = "[" + String(millis() / 1000) + "s] " + message;
+  debugLogs[debugLogNext] = entry;
+  debugLogNext = (debugLogNext + 1) % MAX_DEBUG_LOGS;
+  if (debugLogCount < MAX_DEBUG_LOGS) debugLogCount++;
+  Serial.println("[DEBUG] " + entry);
+}
+
+const char* modeName(DisplayMode mode) {
+  switch (mode) {
+    case MODE_NFL:       return "NFL";
+    case MODE_STOCKS:    return "STOCKS";
+    case MODE_PHRASES:   return "PHRASES";
+    case MODE_WEATHER:   return "WEATHER";
+    case MODE_CYCLE:     return "CYCLE";
+    case MODE_FIREPLACE: return "FIREPLACE";
+    default:             return "UNKNOWN";
+  }
+}
+
+void switchMode(DisplayMode newMode, const char *source) {
+  DisplayMode oldMode = currentMode;
+  currentMode = newMode;
+  addDebugLog(String("Mode switch: ") + modeName(oldMode) + " -> " +
+              modeName(newMode) + " via " + source);
+}
+
 /* ================= MODES & SETTINGS ================= */
-enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE };
-volatile DisplayMode currentMode = MODE_CYCLE;
+
 
 volatile int currentBrightness = 40;
 volatile int scrollDelay = 70;
@@ -110,10 +149,11 @@ unsigned long lastNFLFetch = 0;
 
 // STOCKS
 struct Stock { String symbol; float price, percent; };
-#define MAX_STOCKS 50
+#define MAX_STOCKS 52
 Stock stocks[MAX_STOCKS];
 int stockCount = 0, currentStock = 0;
 unsigned long lastStockFetch = 0;
+const unsigned long STOCK_REFRESH_INTERVAL = 15UL * 60UL * 1000UL;
 
 // PHRASES 
 #define MAX_PHRASES 20
@@ -184,6 +224,7 @@ void displayNFLGame(int idx) {
 
 void displayStock(int idx) {
   Stock &s = stocks[idx];
+  Serial.printf("[STOCKS] displayStock start idx=%d stockCount=%d\n", idx, stockCount);
   bool up = s.percent >= 0;
   uint16_t color = up ? matrix->Color(0,255,0) : matrix->Color(255,0,0);
   String text = s.symbol + " " + String(s.price,2) + " (" + (up?"+":"") + String(s.percent,2) + "%)";
@@ -194,6 +235,7 @@ void displayStock(int idx) {
     matrix->setTextColor(color); matrix->print(text);
     matrix->show(); x--; delay(scrollDelay);
   }
+  Serial.println("[STOCKS] displayStock end");
 }
 
 void displayPhrase(int idx) {
@@ -413,21 +455,156 @@ void fetchScores() {
 }
 
 void fetchStocks() {
-  WiFiClientSecure client; client.setInsecure();
+  WiFiClientSecure client;
+  client.setInsecure();
+
   HTTPClient http;
-  if (http.begin(client, "https://stockscraper.adamjsmith002.workers.dev/")) {
-    if (http.GET() == 200) {
-      DynamicJsonDocument doc(16384);
-      deserializeJson(doc, http.getString());
-      stockCount = 0;
-      for (JsonVariant v : doc.as<JsonArray>()) {
-        if (stockCount >= MAX_STOCKS) break;
-        stocks[stockCount++] = {v["symbol"]|"", v["price"]|0.0f, v["percent"]|0.0f};
-      }
-      lastStockFetch = millis();
-    }
-    http.end();
+  const char *url = "https://stockscraper.adamjsmith002.workers.dev/";
+
+  Serial.println();
+  Serial.println("========== STOCK FETCH ==========");
+  Serial.printf("[STOCKS] WiFi status: %d\n", WiFi.status());
+  Serial.printf("[STOCKS] WiFi RSSI: %d dBm\n", WiFi.RSSI());
+  Serial.printf("[STOCKS] IP: %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("[STOCKS] Free heap: %u\n", ESP.getFreeHeap());
+  Serial.printf("[STOCKS] URL: %s\n", url);
+
+  addDebugLog("Stocks fetch started");
+
+  lastStockFetch = millis();
+
+  if (!http.begin(client, url)) {
+    Serial.println("[STOCKS] http.begin FAILED");
+    addDebugLog("Stocks: http.begin failed");
+    return;
   }
+
+  http.setTimeout(30000);
+  http.setConnectTimeout(15000);
+
+  Serial.println("[STOCKS] Starting HTTPS GET...");
+
+  int httpCode = http.GET();
+
+  Serial.printf("[STOCKS] HTTP GET code: %d\n", httpCode);
+
+  if (httpCode <= 0) {
+    Serial.printf(
+      "[STOCKS] HTTP error: %s\n",
+      http.errorToString(httpCode).c_str()
+    );
+
+    Serial.printf(
+      "[STOCKS] Error code meaning: %d\n",
+      httpCode
+    );
+
+    addDebugLog(
+      String("Stocks HTTP error ") +
+      httpCode +
+      ": " +
+      http.errorToString(httpCode)
+    );
+
+    http.end();
+    Serial.println("=================================");
+    return;
+  }
+
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf(
+      "[STOCKS] Server returned HTTP %d\n",
+      httpCode
+    );
+
+    String errorBody = http.getString();
+
+    Serial.printf(
+      "[STOCKS] Response: %s\n",
+      errorBody.c_str()
+    );
+
+    addDebugLog(
+      String("Stocks server HTTP ") +
+      httpCode
+    );
+
+    http.end();
+    Serial.println("=================================");
+    return;
+  }
+
+  String payload = http.getString();
+
+  Serial.printf(
+    "[STOCKS] Successful response\n"
+  );
+
+  Serial.printf(
+    "[STOCKS] Payload length: %u bytes\n",
+    (unsigned)payload.length()
+  );
+
+  DynamicJsonDocument doc(16384);
+
+  DeserializationError err =
+    deserializeJson(doc, payload);
+
+  if (err || !doc.is<JsonArray>()) {
+
+    Serial.print("[STOCKS] JSON parse error: ");
+
+    if (err) {
+      Serial.println(err.c_str());
+    } else {
+      Serial.println("response is not an array");
+    }
+
+    addDebugLog(
+      String("Stocks JSON error: ") +
+      (err ? err.c_str() : "not an array")
+    );
+
+    http.end();
+    Serial.println("=================================");
+    return;
+  }
+
+  int parsedStockCount = 0;
+
+  for (JsonVariant v : doc.as<JsonArray>()) {
+
+    if (parsedStockCount >= MAX_STOCKS)
+      break;
+
+    const char *symbol = v["symbol"] | "";
+
+    if (*symbol == '\0')
+      continue;
+
+    stocks[parsedStockCount++] = {
+      symbol,
+      v["price"] | 0.0f,
+      v["percent"] | 0.0f
+    };
+  }
+
+  stockCount = parsedStockCount;
+  currentStock = 0;
+
+  Serial.printf(
+    "[STOCKS] Parsed stocks: %d\n",
+    stockCount
+  );
+
+  addDebugLog(
+    String("Stocks fetched: ") +
+    stockCount
+  );
+
+  http.end();
+
+  Serial.println("=================================");
 }
 
 
@@ -530,7 +707,7 @@ void configModeCallback (WiFiManager *myWiFiManager) {
 /* ================= WEB DASHBOARD ================= */
 void setupWeb() {
   server.on("/", []() {
-    String html = "<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width, initial-scale=1'>";
+    String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
     html += "<style>*{box-sizing: border-box;} "; // FIX: Ensures padding doesn't make boxes wider
     html += "body{font-family:sans-serif; text-align:center; background:#111; color:#fff; padding:20px; max-width:420px; margin:auto;} ";
     html += ".btn, input[type=text], input[type=color], select{width:100%; display:block; margin:10px 0; padding:15px; border-radius:8px; border:none; font-size:1.1em;} ";
@@ -543,7 +720,8 @@ void setupWeb() {
     html += "input[type=range]{width:100%; margin:15px 0;}</style></head><body>";
     
     html += String("<h2>Matrix Dashboard V") + currentVersion + "</h2>";
-    html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";  
+    html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";
+    html += "<button class='btn' style='background:#555;' onclick='location.href=\"/logs\"'>Debug Logs</button>";  
     html += "<hr><h3>Basic Modes</h3>";  
     html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
@@ -593,12 +771,37 @@ void setupWeb() {
   });
 
   // ... keep your other handlers (/nfl, /stocks, /phrases, /add, /clear, /brightness, /speed) ...
-  server.on("/nfl", [](){ currentMode = MODE_NFL; lastNFLFetch = 0; server.send(200,"text/plain","OK"); });
-  server.on("/stocks", [](){ currentMode = MODE_STOCKS; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
-  server.on("/weather", [](){ currentMode = MODE_WEATHER; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
-  server.on("/fireplace", [](){ currentMode = MODE_FIREPLACE; server.send(200,"text/plain","OK"); });
+  // Recent debug log page
+  server.on("/logs", []() {
+    String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
+    html += "<meta http-equiv='refresh' content='5'>";
+    html += "<style>body{font-family:monospace;background:#111;color:#eee;padding:16px;margin:auto;max-width:800px;}";
+    html += "h2{font-family:sans-serif;color:#0af;}.log{padding:8px 10px;border-bottom:1px solid #333;";
+    html += "white-space:pre-wrap;word-break:break-word;}.top{font-family:sans-serif;margin-bottom:15px;}";
+    html += "a{color:#0af;}</style></head><body>";
+    html += "<div class='top'><a href='/'>Dashboard</a></div>";
+    html += "<h2>Recent Debug Logs</h2>";
+
+    if (debugLogCount == 0) {
+      html += "<div class='log'>No logs yet.</div>";
+    } else {
+      int start = (debugLogNext - debugLogCount + MAX_DEBUG_LOGS) % MAX_DEBUG_LOGS;
+      for (int i = 0; i < debugLogCount; i++) {
+        int index = (start + i) % MAX_DEBUG_LOGS;
+        html += "<div class='log'>" + debugLogs[index] + "</div>";
+      }
+    }
+
+    html += "</body></html>";
+    server.send(200, "text/html", html);
+  });
+
+  server.on("/nfl", [](){ switchMode(MODE_NFL, "WEB /nfl"); lastNFLFetch = 0; server.send(200,"text/plain","OK"); });
+  server.on("/stocks", [](){ switchMode(MODE_STOCKS, "WEB /stocks"); currentStock = 0; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
+  server.on("/weather", [](){ switchMode(MODE_WEATHER, "WEB /weather"); lastWeatherFetch = 0; server.send(200,"text/plain","OK"); });
+  server.on("/fireplace", [](){ switchMode(MODE_FIREPLACE, "WEB /fireplace"); server.send(200,"text/plain","OK"); });
   server.on("/phrases", [](){ 
-    currentMode = MODE_PHRASES; 
+    switchMode(MODE_PHRASES, "WEB /phrases"); 
     server.send(200,"text/plain","OK"); 
   });
   server.on("/add", []() {
@@ -615,21 +818,24 @@ void setupWeb() {
   server.on("/brightness", [](){ if(server.hasArg("v")){currentBrightness=constrain(server.arg("v").toInt(),1,40); FastLED.setBrightness(currentBrightness);} server.send(200); });
   server.on("/speed", [](){ if(server.hasArg("v")){scrollDelay=constrain(server.arg("v").toInt(),20,150);} server.send(200); });
   server.on("/cycle", [](){ 
-    currentMode = MODE_CYCLE; 
+    switchMode(MODE_CYCLE, "WEB /cycle"); 
+    currentStock = 0;
     lastNFLFetch = 0; 
     lastStockFetch = 0; 
     lastWeatherFetch = 0;
     server.send(200, "text/plain", "OK"); 
   });
-  server.on("/flame_red", [](){ flameMode = 0; server.send(200); });
-  server.on("/flame_blue", [](){ flameMode = 1; server.send(200); });
-  server.on("/flame_green", [](){ flameMode = 2; server.send(200); });
+  server.on("/flame_red", [](){ flameMode = 0; addDebugLog("Fireplace color: RED"); server.send(200); });
+  server.on("/flame_blue", [](){ flameMode = 1; addDebugLog("Fireplace color: BLUE"); server.send(200); });
+  server.on("/flame_green", [](){ flameMode = 2; addDebugLog("Fireplace color: GREEN"); server.send(200); });
   server.begin();
+  addDebugLog("Web dashboard started; logs available at /logs");
 }
 
 /* ================= SETUP & LOOP ================= */
 void setup() {
   Serial.begin(115200);
+  addDebugLog("Booting firmware");
   FastLED.addLeds<WS2812B, DATA_PIN, GRB>(leds, NUM_LEDS);
   FastLED.setBrightness(currentBrightness);
   matrix = new FastLED_NeoMatrix(leds, WIDTH, HEIGHT, NEO_MATRIX_TOP + NEO_MATRIX_LEFT + NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG);
@@ -648,6 +854,7 @@ void setup() {
 
   // Once it connects, it skips all the IP stuff and just starts the app
   Serial.println("WiFi Connected!");
+  addDebugLog("WiFi connected");
   Serial.println(WiFi.localIP()); // Still prints to your computer's Serial Monitor for you
 
   checkForUpdates();
@@ -664,7 +871,9 @@ void loop() {
     if (gameCount > 0) { displayNFLGame(currentGame++); if (currentGame >= gameCount) currentGame = 0; }
   } 
   else if (currentMode == MODE_STOCKS) {
-    if (currentStock == 0 && (millis() - lastStockFetch > 60000 || lastStockFetch == 0)) fetchStocks();
+    // Fetch only at the beginning of a list. This prevents a long list from
+    // being replaced halfway through because the refresh timer expired.
+    if (currentStock == 0 && (millis() - lastStockFetch > STOCK_REFRESH_INTERVAL || lastStockFetch == 0)) fetchStocks();
     if (stockCount > 0) { displayStock(currentStock++); if (currentStock >= stockCount) currentStock = 0; }
   }
   else if (currentMode == MODE_PHRASES) {
@@ -695,23 +904,25 @@ void loop() {
       if (currentGame == 0 && (millis() - lastNFLFetch > 60000 || lastNFLFetch == 0)) fetchScores();
       if (gameCount > 0) { 
         displayNFLGame(currentGame++); 
-        if (currentGame >= gameCount) { currentGame = 0; cycleStage = 1; }
-      } else { cycleStage = 1; }
+        if (currentGame >= gameCount) { currentGame = 0; cycleStage = 1; addDebugLog("Cycle stage: NFL -> STOCKS"); }
+      } else { cycleStage = 1; addDebugLog("Cycle stage: NFL -> STOCKS (no games)"); }
     } 
 
     else if (cycleStage == 1) { // STOCKS
-      if (currentStock == 0 && (millis() - lastStockFetch > 60000 || lastStockFetch == 0)) fetchStocks();
+      // Fetch only at the beginning of a list. This prevents a long list from
+      // being replaced halfway through because the refresh timer expired.
+      if (currentStock == 0 && (millis() - lastStockFetch > STOCK_REFRESH_INTERVAL || lastStockFetch == 0)) fetchStocks();
       if (stockCount > 0) { 
         displayStock(currentStock++); 
-        if (currentStock >= stockCount) { currentStock = 0; cycleStage = 2; }
-      } else { cycleStage = 2; }
+        if (currentStock >= stockCount) { currentStock = 0; cycleStage = 2; addDebugLog("Cycle stage: STOCKS -> PHRASES"); }
+      } else { cycleStage = 2; addDebugLog("Cycle stage: STOCKS -> PHRASES (no stocks)"); }
     }
 
     else if (cycleStage == 2) {
       if (phraseCount > 0) { 
         displayPhrase(currentPhrase++); 
-        if (currentPhrase >= phraseCount) { currentPhrase = 0; cycleStage = 3; }
-      } else { cycleStage = 3; }
+        if (currentPhrase >= phraseCount) { currentPhrase = 0; cycleStage = 3; addDebugLog("Cycle stage: PHRASES -> WEATHER"); }
+      } else { cycleStage = 3; addDebugLog("Cycle stage: PHRASES -> WEATHER (no phrases)"); }
     }
     else if (cycleStage == 3) {
       if (millis() - lastWeatherFetch > 900000 || lastWeatherFetch == 0) {
@@ -720,6 +931,7 @@ void loop() {
       }
       displayWeather();
       cycleStage = 0; // Restart cycle
+      addDebugLog("Cycle stage: WEATHER -> NFL");
     }
   }
 }

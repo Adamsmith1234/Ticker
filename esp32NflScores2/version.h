@@ -1,2 +1,2 @@
 #pragma once
-#define FIRMWARE_VERSION 25
+#define FIRMWARE_VERSION 27
