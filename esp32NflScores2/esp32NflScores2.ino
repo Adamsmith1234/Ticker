@@ -455,53 +455,156 @@ void fetchScores() {
 }
 
 void fetchStocks() {
-  WiFiClientSecure client; client.setInsecure();
+  WiFiClientSecure client;
+  client.setInsecure();
+
   HTTPClient http;
   const char *url = "https://stockscraper.adamjsmith002.workers.dev/";
-  Serial.println("[STOCKS] fetchStocks start");
+
+  Serial.println();
+  Serial.println("========== STOCK FETCH ==========");
+  Serial.printf("[STOCKS] WiFi status: %d\n", WiFi.status());
+  Serial.printf("[STOCKS] WiFi RSSI: %d dBm\n", WiFi.RSSI());
+  Serial.printf("[STOCKS] IP: %s\n", WiFi.localIP().toString().c_str());
+  Serial.printf("[STOCKS] Free heap: %u\n", ESP.getFreeHeap());
+  Serial.printf("[STOCKS] URL: %s\n", url);
+
   addDebugLog("Stocks fetch started");
-  // Record the attempt before the request so failures do not retry continuously.
+
   lastStockFetch = millis();
 
   if (!http.begin(client, url)) {
-    Serial.println("[STOCKS] http.begin failed");
-    addDebugLog("Stocks fetch: http.begin failed");
+    Serial.println("[STOCKS] http.begin FAILED");
+    addDebugLog("Stocks: http.begin failed");
     return;
   }
 
-  http.setTimeout(10000);
+  http.setTimeout(30000);
+  http.setConnectTimeout(15000);
+
+  Serial.println("[STOCKS] Starting HTTPS GET...");
+
   int httpCode = http.GET();
+
   Serial.printf("[STOCKS] HTTP GET code: %d\n", httpCode);
-  if (httpCode != HTTP_CODE_OK) {
-    addDebugLog(String("Stocks fetch HTTP error: ") + httpCode);
+
+  if (httpCode <= 0) {
+    Serial.printf(
+      "[STOCKS] HTTP error: %s\n",
+      http.errorToString(httpCode).c_str()
+    );
+
+    Serial.printf(
+      "[STOCKS] Error code meaning: %d\n",
+      httpCode
+    );
+
+    addDebugLog(
+      String("Stocks HTTP error ") +
+      httpCode +
+      ": " +
+      http.errorToString(httpCode)
+    );
+
     http.end();
+    Serial.println("=================================");
+    return;
+  }
+
+  if (httpCode != HTTP_CODE_OK) {
+    Serial.printf(
+      "[STOCKS] Server returned HTTP %d\n",
+      httpCode
+    );
+
+    String errorBody = http.getString();
+
+    Serial.printf(
+      "[STOCKS] Response: %s\n",
+      errorBody.c_str()
+    );
+
+    addDebugLog(
+      String("Stocks server HTTP ") +
+      httpCode
+    );
+
+    http.end();
+    Serial.println("=================================");
     return;
   }
 
   String payload = http.getString();
-  Serial.printf("[STOCKS] payload length: %u\n", (unsigned)payload.length());
+
+  Serial.printf(
+    "[STOCKS] Successful response\n"
+  );
+
+  Serial.printf(
+    "[STOCKS] Payload length: %u bytes\n",
+    (unsigned)payload.length()
+  );
+
   DynamicJsonDocument doc(16384);
-  DeserializationError err = deserializeJson(doc, payload);
+
+  DeserializationError err =
+    deserializeJson(doc, payload);
+
   if (err || !doc.is<JsonArray>()) {
+
     Serial.print("[STOCKS] JSON parse error: ");
-    Serial.println(err ? err.c_str() : "response is not an array");
-    addDebugLog(String("Stocks JSON error: ") + (err ? err.c_str() : "not an array"));
+
+    if (err) {
+      Serial.println(err.c_str());
+    } else {
+      Serial.println("response is not an array");
+    }
+
+    addDebugLog(
+      String("Stocks JSON error: ") +
+      (err ? err.c_str() : "not an array")
+    );
+
     http.end();
+    Serial.println("=================================");
     return;
   }
 
   int parsedStockCount = 0;
+
   for (JsonVariant v : doc.as<JsonArray>()) {
-    if (parsedStockCount >= MAX_STOCKS) break;
+
+    if (parsedStockCount >= MAX_STOCKS)
+      break;
+
     const char *symbol = v["symbol"] | "";
-    if (*symbol == '\0') continue;
-    stocks[parsedStockCount++] = {symbol, v["price"] | 0.0f, v["percent"] | 0.0f};
+
+    if (*symbol == '\0')
+      continue;
+
+    stocks[parsedStockCount++] = {
+      symbol,
+      v["price"] | 0.0f,
+      v["percent"] | 0.0f
+    };
   }
+
   stockCount = parsedStockCount;
   currentStock = 0;
-  Serial.printf("[STOCKS] parsed stocks: %d\n", stockCount);
-  addDebugLog(String("Stocks fetched: ") + stockCount);
+
+  Serial.printf(
+    "[STOCKS] Parsed stocks: %d\n",
+    stockCount
+  );
+
+  addDebugLog(
+    String("Stocks fetched: ") +
+    stockCount
+  );
+
   http.end();
+
+  Serial.println("=================================");
 }
 
 
