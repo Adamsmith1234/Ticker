@@ -48,6 +48,7 @@ void checkForUpdates() {
   if (httpCode == 200) {
     int newVersion = http.getString().toInt();
     Serial.printf("Current: %d, New: %d\n", currentVersion, newVersion);
+    addDebugLog(String("Firmware versions: current=") + currentVersion + ", available=" + newVersion);
 
     if (newVersion > currentVersion) {
       Serial.println("New version found! Starting update...");
@@ -59,12 +60,15 @@ void checkForUpdates() {
       switch (ret) {
         case HTTP_UPDATE_FAILED:
           Serial.printf("Update Failed (%d): %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+          addDebugLog(String("Firmware update failed ") + httpUpdate.getLastError() + ": " + httpUpdate.getLastErrorString());
           break;
         case HTTP_UPDATE_NO_UPDATES:
           Serial.println("No updates found.");
+          addDebugLog("No firmware update found");
           break;
         case HTTP_UPDATE_OK:
           Serial.println("Update success!");
+          addDebugLog("Firmware update succeeded");
           break;
       }
     } else {
@@ -73,6 +77,7 @@ void checkForUpdates() {
     }
   } else {
     Serial.printf("Failed to check version. HTTP Code: %d\n", httpCode);
+    addDebugLog(String("Firmware version check failed, HTTP ") + httpCode);
   }
   http.end();
 }
@@ -97,7 +102,7 @@ WebServer server(80);
 
 /* ================= DEBUG LOGGING ================= */
 // Recent logs are kept in RAM and shown at /logs.
-#define MAX_DEBUG_LOGS 40
+#define MAX_DEBUG_LOGS 100
 String debugLogs[MAX_DEBUG_LOGS];
 int debugLogCount = 0;
 int debugLogNext = 0;
@@ -422,16 +427,20 @@ void fetchScores() {
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
   Serial.println("[NFL] fetchScores start");
+  addDebugLog("NFL fetch started");
   if (http.begin(client, "https://espnscraper.adamjsmith002.workers.dev/")) {
     int httpCode = http.GET();
     Serial.printf("[NFL] HTTP GET code: %d\n", httpCode);
+    addDebugLog(String("NFL HTTP GET code: ") + httpCode);
     if (httpCode == 200) {
       String payload = http.getString();
       Serial.printf("[NFL] payload length: %u\n", (unsigned)payload.length());
+      addDebugLog(String("NFL payload length: ") + payload.length());
       DynamicJsonDocument doc(32768);
       DeserializationError err = deserializeJson(doc, payload);
       if (err) {
         Serial.print("[NFL] JSON parse error: "); Serial.println(err.c_str());
+        addDebugLog(String("NFL JSON parse error: ") + err.c_str());
       } else {
         gameCount = 0;
         for (JsonVariant v : doc.as<JsonArray>()) {
@@ -443,14 +452,17 @@ void fetchScores() {
           games[gameCount++] = {away, v["away"]["score"]|"", home, v["home"]["score"]|"", ar,ag,ab, hr,hg,hb};
         }
         Serial.printf("[NFL] parsed games: %d\n", gameCount);
+        addDebugLog(String("NFL parsed games: ") + gameCount);
         lastNFLFetch = millis();
       }
     } else {
       Serial.println("[NFL] HTTP GET failed or returned non-200");
+      addDebugLog(String("NFL HTTP GET failed, HTTP ") + httpCode);
     }
     http.end();
   } else {
     Serial.println("[NFL] http.begin failed");
+    addDebugLog("NFL http.begin failed");
   }
 }
 
@@ -468,6 +480,8 @@ void fetchStocks() {
   Serial.printf("[STOCKS] IP: %s\n", WiFi.localIP().toString().c_str());
   Serial.printf("[STOCKS] Free heap: %u\n", ESP.getFreeHeap());
   Serial.printf("[STOCKS] URL: %s\n", url);
+  addDebugLog(String("Stocks network: WiFi=") + WiFi.status() + ", RSSI=" + WiFi.RSSI() +
+              ", IP=" + WiFi.localIP().toString() + ", heap=" + ESP.getFreeHeap());
 
   addDebugLog("Stocks fetch started");
 
@@ -483,10 +497,12 @@ void fetchStocks() {
   http.setConnectTimeout(15000);
 
   Serial.println("[STOCKS] Starting HTTPS GET...");
+  addDebugLog("Stocks HTTPS GET started");
 
   int httpCode = http.GET();
 
   Serial.printf("[STOCKS] HTTP GET code: %d\n", httpCode);
+  addDebugLog(String("Stocks HTTP GET code: ") + httpCode);
 
   if (httpCode <= 0) {
     Serial.printf(
@@ -539,11 +555,13 @@ void fetchStocks() {
   Serial.printf(
     "[STOCKS] Successful response\n"
   );
+  addDebugLog("Stocks successful response");
 
   Serial.printf(
     "[STOCKS] Payload length: %u bytes\n",
     (unsigned)payload.length()
   );
+  addDebugLog(String("Stocks payload length: ") + payload.length() + " bytes");
 
   DynamicJsonDocument doc(16384);
 
@@ -596,6 +614,7 @@ void fetchStocks() {
     "[STOCKS] Parsed stocks: %d\n",
     stockCount
   );
+  addDebugLog(String("Stocks parsed stocks: ") + stockCount);
 
   addDebugLog(
     String("Stocks fetched: ") +
@@ -617,9 +636,21 @@ void fetchWeather() {
   String url = "https://api.open-meteo.com/v1/forecast?latitude=41.83&longitude=-72.70&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph";
 
   if (http.begin(client, url)) {
-    if (http.GET() == 200) {
-      DynamicJsonDocument doc(1024);
-      deserializeJson(doc, http.getString());
+    int httpCode = http.GET();
+    Serial.printf("[WEATHER] HTTP GET code: %d\n", httpCode);
+    addDebugLog(String("Weather HTTP GET code: ") + httpCode);
+    if (httpCode == 200) {
+      DynamicJsonDocument doc(2048);
+      String payload = http.getString();
+      Serial.printf("[WEATHER] payload length: %u\n", (unsigned)payload.length());
+      addDebugLog(String("Weather payload length: ") + payload.length());
+      DeserializationError err = deserializeJson(doc, payload);
+      if (err) {
+        Serial.printf("[WEATHER] JSON parse error: %s\n", err.c_str());
+        addDebugLog(String("Weather JSON parse error: ") + err.c_str());
+        http.end();
+        return;
+      }
       
       localWeather.temp = doc["current"]["temperature_2m"];
       localWeather.feelsLike = doc["current"]["apparent_temperature"];
@@ -638,6 +669,7 @@ void fetchWeather() {
 
       weatherLoaded = true;
       lastWeatherFetch = millis();
+      addDebugLog(String("Weather loaded: ") + localWeather.condition + ", " + localWeather.temp + "F");
     }
     http.end();
   }
@@ -653,18 +685,21 @@ void fetchWeather() {
   http.addHeader("User-Agent", "ESP32-Weather-Display"); 
   
   int httpCode = http.GET();
+  Serial.printf("[WEATHER] Forecast HTTP GET code: %d\n", httpCode);
+  addDebugLog(String("Forecast HTTP GET code: ") + httpCode);
   if (httpCode == 200) {
     String payload = http.getString();
     
     // Use a filter to only parse the first period's detailed forecast
-    StaticJsonDocument<200> filter;
+    StaticJsonDocument<512> filter;
     filter["properties"]["periods"][0]["detailedForecast"] = true;
     
-    DynamicJsonDocument doc(4096); 
+    DynamicJsonDocument doc(8192); 
     deserializeJson(doc, payload, DeserializationOption::Filter(filter));
     
     localWeather.summary = doc["properties"]["periods"][0]["detailedForecast"].as<String>();
     Serial.println("Forecast Summary: " + localWeather.summary);
+    addDebugLog("Forecast summary loaded");
   }
   http.end();
 }
@@ -718,7 +753,7 @@ void setupWeb() {
     html += "input[type=color]{height:50px; cursor:pointer; background:#333;} ";
     html += "input[type=range]{width:100%; margin:15px 0;}</style></head><body>";
     
-    html += String("<h2>Matrix Dashboard V") + currentVersion + "</h2>";
+    html += String("<h2>Matrix Dashboard V1.") + currentVersion + "</h2>";
     html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";
     html += "<button class='btn' style='background:#555;' onclick='location.href=\"/logs\"'>Debug Logs</button>";  
     html += "<hr><h3>Basic Modes</h3>";  
@@ -765,6 +800,7 @@ void setupWeb() {
       pg = (number >> 8) & 0xFF;
       pb = number & 0xFF;
       Serial.printf("[WEB] Phrase Color: R:%d G:%d B:%d\n", pr, pg, pb);
+      addDebugLog(String("Phrase color: R=") + pr + ", G=" + pg + ", B=" + pb);
       server.send(200, "text/plain", "OK");
     }
   });
@@ -777,9 +813,21 @@ void setupWeb() {
     html += "<style>body{font-family:monospace;background:#111;color:#eee;padding:16px;margin:auto;max-width:800px;}";
     html += "h2{font-family:sans-serif;color:#0af;}.log{padding:8px 10px;border-bottom:1px solid #333;";
     html += "white-space:pre-wrap;word-break:break-word;}.top{font-family:sans-serif;margin-bottom:15px;}";
+    html += ".metrics{font-family:monospace;background:#1b1b1b;border:1px solid #333;padding:12px;margin:12px 0 20px;}";
+    html += ".metric{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #2b2b2b;}";
+    html += ".metric:last-child{border-bottom:0;}.metric-label{color:#aaa;}.metric-value{color:#7fdaff;}";
     html += "a{color:#0af;}</style></head><body>";
     html += "<div class='top'><a href='/'>Dashboard</a></div>";
     html += "<h2>Recent Debug Logs</h2>";
+    unsigned long heapSize = ESP.getHeapSize();
+    unsigned long freeHeap = ESP.getFreeHeap();
+    unsigned long usedHeap = heapSize > freeHeap ? heapSize - freeHeap : 0;
+    html += "<div class='metrics'><div class='metric'><span class='metric-label'>Heap total</span><span class='metric-value'>" + String(heapSize) + " bytes</span></div>";
+    html += "<div class='metric'><span class='metric-label'>Heap used</span><span class='metric-value'>" + String(usedHeap) + " bytes</span></div>";
+    html += "<div class='metric'><span class='metric-label'>Heap free</span><span class='metric-value'>" + String(freeHeap) + " bytes</span></div>";
+    html += "<div class='metric'><span class='metric-label'>Minimum free heap</span><span class='metric-value'>" + String(ESP.getMinFreeHeap()) + " bytes</span></div>";
+    html += "<div class='metric'><span class='metric-label'>Largest free block</span><span class='metric-value'>" + String(ESP.getMaxAllocHeap()) + " bytes</span></div>";
+    html += "<div class='metric'><span class='metric-label'>Uptime</span><span class='metric-value'>" + String(millis() / 1000) + " seconds</span></div></div>";
 
     if (debugLogCount == 0) {
       html += "<div class='log'>No logs yet.</div>";
@@ -810,6 +858,7 @@ void setupWeb() {
     phrases[phraseCount++] = newPhrase;
     Serial.print("[WEB] Added clean phrase: ");
     Serial.println(newPhrase);
+    addDebugLog(String("Phrase added: ") + newPhrase);
     server.send(200, "text/plain", "OK");
   }
 });
