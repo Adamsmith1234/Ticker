@@ -13,6 +13,7 @@
 #include <ArduinoJson.h>
 #include <WiFiManager.h> // 
 #include <ESPmDNS.h>
+#include <esp_system.h>
 #include <version.h>
 
 /* ================= CONFIG ================= */
@@ -423,12 +424,41 @@ void displayFireplace() {
 
 
 /* ================= FETCH LOGIC ================= */
+bool ensureWiFi(const char *source) {
+  wl_status_t status = WiFi.status();
+  Serial.printf("[%s] WiFi status=%d RSSI=%d dBm heap=%u\n",
+                source, status, WiFi.RSSI(), ESP.getFreeHeap());
+  addDebugLog(String(source) + " network: WiFi=" + status +
+              ", RSSI=" + WiFi.RSSI() + " dBm, heap=" + ESP.getFreeHeap());
+
+  if (status == WL_CONNECTED) return true;
+
+  addDebugLog(String(source) + " WiFi disconnected; reconnecting");
+  WiFi.reconnect();
+  unsigned long reconnectStart = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - reconnectStart < 10000) {
+    delay(250);
+    yield();
+  }
+
+  status = WiFi.status();
+  Serial.printf("[%s] WiFi after reconnect: status=%d RSSI=%d dBm\n",
+                source, status, WiFi.RSSI());
+  addDebugLog(String(source) + " WiFi reconnect result: " + status);
+  return status == WL_CONNECTED;
+}
+
 void fetchScores() {
+  if (!ensureWiFi("NFL")) return;
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
   Serial.println("[NFL] fetchScores start");
   addDebugLog("NFL fetch started");
+  lastNFLFetch = millis();
   if (http.begin(client, "https://espnscraper.adamjsmith002.workers.dev/")) {
+    http.setConnectTimeout(15000);
+    http.setTimeout(30000);
+    http.setReuse(false);
     int httpCode = http.GET();
     Serial.printf("[NFL] HTTP GET code: %d\n", httpCode);
     addDebugLog(String("NFL HTTP GET code: ") + httpCode);
@@ -456,8 +486,10 @@ void fetchScores() {
         lastNFLFetch = millis();
       }
     } else {
+      String error = http.errorToString(httpCode);
       Serial.println("[NFL] HTTP GET failed or returned non-200");
-      addDebugLog(String("NFL HTTP GET failed, HTTP ") + httpCode);
+      Serial.printf("[NFL] HTTP error: %s\n", error.c_str());
+      addDebugLog(String("NFL HTTP GET failed, HTTP ") + httpCode + ": " + error);
     }
     http.end();
   } else {
@@ -467,6 +499,7 @@ void fetchScores() {
 }
 
 void fetchStocks() {
+  if (!ensureWiFi("STOCKS")) return;
   WiFiClientSecure client;
   client.setInsecure();
 
@@ -628,6 +661,7 @@ void fetchStocks() {
 
 
 void fetchWeather() {
+  if (!ensureWiFi("WEATHER")) return;
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
@@ -676,6 +710,7 @@ void fetchWeather() {
 }
 
  void fetchForecastText() {
+  if (!ensureWiFi("FORECAST")) return;
   HTTPClient http;
   // This is the specific Gridpoint for Bloomfield, CT
   String url = "https://api.weather.gov/gridpoints/BOX/68,91/forecast";
@@ -884,6 +919,8 @@ void setupWeb() {
 void setup() {
   Serial.begin(115200);
   addDebugLog("Booting firmware");
+  Serial.printf("Reset reason code: %d\n", (int)esp_reset_reason());
+  addDebugLog(String("Reset reason code: ") + (int)esp_reset_reason());
   FastLED.addLeds<WS2812B, DATA_PIN, GRB>(leds, NUM_LEDS);
   FastLED.setBrightness(currentBrightness);
   matrix = new FastLED_NeoMatrix(leds, WIDTH, HEIGHT, NEO_MATRIX_TOP + NEO_MATRIX_LEFT + NEO_MATRIX_COLUMNS + NEO_MATRIX_ZIGZAG);
