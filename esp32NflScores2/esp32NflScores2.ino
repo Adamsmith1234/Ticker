@@ -39,9 +39,18 @@ void checkForUpdates() {
   client.setInsecure(); 
 
   HTTPClient http;
-  http.begin(client, versionUrl);
+  http.setConnectTimeout(10000);
+  http.setTimeout(15000);
+  http.setReuse(false);
 
-  // ADD THIS LINE TO FIX THE 301 ERROR
+  if (!http.begin(client, versionUrl)) {
+    Serial.println("Firmware version http.begin failed");
+    addDebugLog("Firmware version http.begin failed");
+    client.stop();
+    return;
+  }
+
+  // Follow GitHub's redirects for version.txt.
   http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
 
   int httpCode = http.GET();
@@ -81,6 +90,7 @@ void checkForUpdates() {
     addDebugLog(String("Firmware version check failed, HTTP ") + httpCode);
   }
   http.end();
+  client.stop();
 }
 
 #define DATA_PIN 13 
@@ -462,13 +472,13 @@ void fetchScores() {
   if (!ensureWiFi("NFL")) return;
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
+  http.setConnectTimeout(10000);
+  http.setTimeout(15000);
+  http.setReuse(false);
   Serial.println("[NFL] fetchScores start");
   addDebugLog("NFL fetch started");
   lastNFLFetch = millis();
   if (http.begin(client, "https://espnscraper.adamjsmith002.workers.dev/")) {
-    http.setConnectTimeout(15000);
-    http.setTimeout(30000);
-    http.setReuse(false);
     int httpCode = http.GET();
     Serial.printf("[NFL] HTTP GET code: %d\n", httpCode);
     addDebugLog(String("NFL HTTP GET code: ") + httpCode);
@@ -502,9 +512,11 @@ void fetchScores() {
       addDebugLog(String("NFL HTTP GET failed, HTTP ") + httpCode + ": " + error);
     }
     http.end();
+    client.stop();
   } else {
     Serial.println("[NFL] http.begin failed");
     addDebugLog("NFL http.begin failed");
+    client.stop();
   }
 }
 
@@ -514,6 +526,9 @@ void fetchStocks() {
   client.setInsecure();
 
   HTTPClient http;
+  http.setConnectTimeout(10000);
+  http.setTimeout(15000);
+  http.setReuse(false);
   const char *url = "https://stockscraper.adamjsmith002.workers.dev/";
 
   Serial.println();
@@ -532,11 +547,9 @@ void fetchStocks() {
   if (!http.begin(client, url)) {
     Serial.println("[STOCKS] http.begin FAILED");
     addDebugLog("Stocks: http.begin failed");
+    client.stop();
     return;
   }
-
-  http.setTimeout(30000);
-  http.setConnectTimeout(15000);
 
   Serial.println("[STOCKS] Starting HTTPS GET...");
   addDebugLog("Stocks HTTPS GET started");
@@ -566,6 +579,7 @@ void fetchStocks() {
     );
 
     http.end();
+    client.stop();
     Serial.println("=================================");
     return;
   }
@@ -589,6 +603,7 @@ void fetchStocks() {
     );
 
     http.end();
+    client.stop();
     Serial.println("=================================");
     return;
   }
@@ -627,6 +642,7 @@ void fetchStocks() {
     );
 
     http.end();
+    client.stop();
     Serial.println("=================================");
     return;
   }
@@ -665,6 +681,7 @@ void fetchStocks() {
   );
 
   http.end();
+  client.stop();
 
   Serial.println("=================================");
 }
@@ -672,38 +689,50 @@ void fetchStocks() {
 
 void fetchWeather() {
   if (!ensureWiFi("WEATHER")) return;
+
   WiFiClientSecure client;
   client.setInsecure();
+
   HTTPClient http;
+  http.setConnectTimeout(10000);
+  http.setTimeout(15000);
+  http.setReuse(false);
 
   // Expanded URL for extra stats
   // UPDATED URL for Southwick, MA (Lat: 42.05, Lon: -72.77)
   String url = "https://api.open-meteo.com/v1/forecast?latitude=42.05&longitude=-72.77&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph";
 
-  if (http.begin(client, url)) {
-    int httpCode = http.GET();
-    Serial.printf("[WEATHER] HTTP GET code: %d\n", httpCode);
-    addDebugLog(String("Weather HTTP GET code: ") + httpCode);
-    if (httpCode == 200) {
-      DynamicJsonDocument doc(2048);
-      String payload = http.getString();
-      Serial.printf("[WEATHER] payload length: %u\n", (unsigned)payload.length());
-      addDebugLog(String("Weather payload length: ") + payload.length());
-      DeserializationError err = deserializeJson(doc, payload);
-      if (err) {
-        Serial.printf("[WEATHER] JSON parse error: %s\n", err.c_str());
-        addDebugLog(String("Weather JSON parse error: ") + err.c_str());
-        http.end();
-        return;
-      }
-      
+  logNetworkDiagnostics("Weather before HTTPS GET");
+  addDebugLog("Weather fetch started");
+
+  if (!http.begin(client, url)) {
+    Serial.println("[WEATHER] http.begin failed");
+    addDebugLog("Weather http.begin failed");
+    client.stop();
+    return;
+  }
+
+  int httpCode = http.GET();
+  Serial.printf("[WEATHER] HTTP GET code: %d\n", httpCode);
+  addDebugLog(String("Weather HTTP GET code: ") + httpCode);
+
+  if (httpCode == 200) {
+    DynamicJsonDocument doc(2048);
+    String payload = http.getString();
+    Serial.printf("[WEATHER] payload length: %u\n", (unsigned)payload.length());
+    addDebugLog(String("Weather payload length: ") + payload.length());
+
+    DeserializationError err = deserializeJson(doc, payload);
+    if (err) {
+      Serial.printf("[WEATHER] JSON parse error: %s\n", err.c_str());
+      addDebugLog(String("Weather JSON parse error: ") + err.c_str());
+    } else {
       localWeather.temp = doc["current"]["temperature_2m"];
       localWeather.feelsLike = doc["current"]["apparent_temperature"];
       localWeather.humidity = doc["current"]["relative_humidity_2m"];
       localWeather.windSpeed = doc["current"]["wind_speed_10m"];
       localWeather.code = doc["current"]["weather_code"];
-      
-      // Map WMO codes to text
+
       int c = localWeather.code;
       if (c == 0) localWeather.condition = "CLEAR";
       else if (c <= 3) localWeather.condition = "CLOUDY";
@@ -716,38 +745,69 @@ void fetchWeather() {
       lastWeatherFetch = millis();
       addDebugLog(String("Weather loaded: ") + localWeather.condition + ", " + localWeather.temp + "F");
     }
-    http.end();
+  } else {
+    logNetworkDiagnostics("Weather after HTTPS failure");
+    Serial.printf("[WEATHER] HTTP error: %s\n", http.errorToString(httpCode).c_str());
+    addDebugLog(String("Weather HTTP error ") + httpCode + ": " + http.errorToString(httpCode));
   }
+
+  http.end();
+  client.stop();
 }
+
 
  void fetchForecastText() {
   if (!ensureWiFi("FORECAST")) return;
-  HTTPClient http;
-  // This is the specific Gridpoint for Bloomfield, CT
-  String url = "https://api.weather.gov/gridpoints/BOX/38,72/forecast";
 
-  http.begin(url);
-  // NWS requires a User-Agent header or it will reject the request
-  http.addHeader("User-Agent", "ESP32-Weather-Display"); 
-  
+  WiFiClientSecure client;
+  client.setInsecure();
+
+  HTTPClient http;
+  http.setConnectTimeout(10000);
+  http.setTimeout(15000);
+  http.setReuse(false);
+
+  const char *url = "https://api.weather.gov/gridpoints/BOX/38,72/forecast";
+
+  logNetworkDiagnostics("Forecast before HTTPS GET");
+
+  if (!http.begin(client, url)) {
+    Serial.println("[WEATHER] Forecast http.begin failed");
+    addDebugLog("Forecast http.begin failed");
+    client.stop();
+    return;
+  }
+
+  http.addHeader("User-Agent", "ESP32-Weather-Display");
+
   int httpCode = http.GET();
   Serial.printf("[WEATHER] Forecast HTTP GET code: %d\n", httpCode);
   addDebugLog(String("Forecast HTTP GET code: ") + httpCode);
+
   if (httpCode == 200) {
     String payload = http.getString();
-    
-    // Use a filter to only parse the first period's detailed forecast
+
     StaticJsonDocument<512> filter;
     filter["properties"]["periods"][0]["detailedForecast"] = true;
-    
-    DynamicJsonDocument doc(8192); 
-    deserializeJson(doc, payload, DeserializationOption::Filter(filter));
-    
-    localWeather.summary = doc["properties"]["periods"][0]["detailedForecast"].as<String>();
-    Serial.println("Forecast Summary: " + localWeather.summary);
-    addDebugLog("Forecast summary loaded");
+
+    DynamicJsonDocument doc(8192);
+    DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+
+    if (!err) {
+      localWeather.summary = doc["properties"]["periods"][0]["detailedForecast"].as<String>();
+      Serial.println("Forecast Summary: " + localWeather.summary);
+      addDebugLog("Forecast summary loaded");
+    } else {
+      Serial.printf("[WEATHER] Forecast JSON parse error: %s\n", err.c_str());
+      addDebugLog(String("Forecast JSON parse error: ") + err.c_str());
+    }
+  } else {
+    logNetworkDiagnostics("Forecast after HTTPS failure");
+    addDebugLog(String("Forecast HTTP error ") + httpCode + ": " + http.errorToString(httpCode));
   }
+
   http.end();
+  client.stop();
 }
 
 
