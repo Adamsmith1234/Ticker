@@ -116,6 +116,16 @@ void addDebugLog(const String &message) {
   Serial.println("[DEBUG] " + entry);
 }
 
+void logNetworkDiagnostics(const char *source) {
+  String diagnostics = String("status=") + WiFi.status() +
+      ", RSSI=" + WiFi.RSSI() + " dBm, MAC=" + WiFi.macAddress() +
+      ", BSSID=" + WiFi.BSSIDstr() + ", IP=" + WiFi.localIP().toString() +
+      ", gateway=" + WiFi.gatewayIP().toString() +
+      ", DNS=" + WiFi.dnsIP().toString() + ", heap=" + ESP.getFreeHeap();
+  Serial.println(String("[NETWORK] ") + source + ": " + diagnostics);
+  addDebugLog(String(source) + " network diagnostics: " + diagnostics);
+}
+
 const char* modeName(DisplayMode mode) {
   switch (mode) {
     case MODE_NFL:       return "NFL";
@@ -513,8 +523,7 @@ void fetchStocks() {
   Serial.printf("[STOCKS] IP: %s\n", WiFi.localIP().toString().c_str());
   Serial.printf("[STOCKS] Free heap: %u\n", ESP.getFreeHeap());
   Serial.printf("[STOCKS] URL: %s\n", url);
-  addDebugLog(String("Stocks network: WiFi=") + WiFi.status() + ", RSSI=" + WiFi.RSSI() +
-              ", IP=" + WiFi.localIP().toString() + ", heap=" + ESP.getFreeHeap());
+  logNetworkDiagnostics("Stocks before HTTPS GET");
 
   addDebugLog("Stocks fetch started");
 
@@ -538,6 +547,7 @@ void fetchStocks() {
   addDebugLog(String("Stocks HTTP GET code: ") + httpCode);
 
   if (httpCode <= 0) {
+    logNetworkDiagnostics("Stocks after HTTPS failure");
     Serial.printf(
       "[STOCKS] HTTP error: %s\n",
       http.errorToString(httpCode).c_str()
