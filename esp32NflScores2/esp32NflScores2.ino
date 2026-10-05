@@ -14,6 +14,7 @@
 #include <WiFiManager.h> // 
 #include <ESPmDNS.h>
 #include <esp_system.h>
+#include <lwip/dns.h>      // for forcing IPv4 DNS servers
 #include <version.h>
 
 /* ================= CONFIG ================= */
@@ -31,6 +32,69 @@ const String binaryUrl  = baseUrl + "firmware.bin";
 
 enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE };
 volatile DisplayMode currentMode = MODE_CYCLE;
+
+// Forward declarations (needed outside the Arduino IDE's auto-prototyping)
+void addDebugLog(const String &message);
+
+/* ================= NETWORK HELPERS ================= */
+
+// Force public IPv4 DNS servers. Some routers hand out an IPv6-only DNS
+// address, which the ESP32 can't use reliably, so lookups time out and
+// HTTPClient returns -1. DHCP lease renewals can overwrite these, so this is
+// called before every fetch (cheap) as well as after (re)connecting.
+void forceDNS() {
+  ip_addr_t d0, d1;
+  IP_ADDR4(&d0, 1, 1, 1, 1);
+  IP_ADDR4(&d1, 8, 8, 8, 8);
+  dns_setserver(0, &d0);
+  dns_setserver(1, &d1);
+}
+
+// Counts consecutive network-level failures (HTTP code <= 0) across all fetches
+int consecutiveFailures = 0;
+
+void noteFetchSuccess() {
+  consecutiveFailures = 0;
+}
+
+void logDnsTest(const char *host) {
+  IPAddress ip;
+  int ok = WiFi.hostByName(host, ip);
+  addDebugLog(String("DNS test ") + host + ": " + (ok == 1 ? ip.toString() : String("FAILED")));
+  addDebugLog(String("Largest free block: ") + ESP.getMaxAllocHeap());
+}
+
+void noteFetchFailure(const char *source) {
+  consecutiveFailures++;
+  addDebugLog(String(source) + " network failure #" + consecutiveFailures);
+
+  if (consecutiveFailures >= 6) {
+    addDebugLog("Too many consecutive failures; restarting");
+    delay(300);
+    ESP.restart();
+  } else if (consecutiveFailures == 3) {
+    addDebugLog("3 consecutive failures; cycling WiFi");
+    WiFi.disconnect();
+    delay(500);
+    WiFi.reconnect();
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - start < 10000) {
+      delay(250);
+      yield();
+    }
+    forceDNS();
+    addDebugLog(String("WiFi after cycle: ") + WiFi.status());
+  }
+}
+
+// Shared HTTPClient setup. HTTP/1.0 avoids chunked transfer encoding so we can
+// parse straight from the stream without buffering the payload in a String.
+void configureHttp(HTTPClient &http) {
+  http.setConnectTimeout(10000);
+  http.setTimeout(15000);
+  http.setReuse(false);
+  http.useHTTP10(true);
+}
 
 void checkForUpdates() {
   Serial.println("Checking for updates...");
@@ -113,17 +177,20 @@ WebServer server(80);
 
 /* ================= DEBUG LOGGING ================= */
 // Recent logs are kept in RAM and shown at /logs.
+// Fixed-size char buffers (instead of String) so logging never fragments the heap.
 #define MAX_DEBUG_LOGS 100
-String debugLogs[MAX_DEBUG_LOGS];
+#define DEBUG_LOG_LEN 160
+char debugLogs[MAX_DEBUG_LOGS][DEBUG_LOG_LEN];
 int debugLogCount = 0;
 int debugLogNext = 0;
 
 void addDebugLog(const String &message) {
-  String entry = "[" + String(millis() / 1000) + "s] " + message;
-  debugLogs[debugLogNext] = entry;
+  snprintf(debugLogs[debugLogNext], DEBUG_LOG_LEN, "[%lus] %s",
+           millis() / 1000, message.c_str());
+  Serial.print("[DEBUG] ");
+  Serial.println(debugLogs[debugLogNext]);
   debugLogNext = (debugLogNext + 1) % MAX_DEBUG_LOGS;
   if (debugLogCount < MAX_DEBUG_LOGS) debugLogCount++;
-  Serial.println("[DEBUG] " + entry);
 }
 
 void logNetworkDiagnostics(const char *source) {
@@ -131,7 +198,8 @@ void logNetworkDiagnostics(const char *source) {
       ", RSSI=" + WiFi.RSSI() + " dBm, MAC=" + WiFi.macAddress() +
       ", BSSID=" + WiFi.BSSIDstr() + ", IP=" + WiFi.localIP().toString() +
       ", gateway=" + WiFi.gatewayIP().toString() +
-      ", DNS=" + WiFi.dnsIP().toString() + ", heap=" + ESP.getFreeHeap();
+      ", DNS=" + WiFi.dnsIP().toString() + ", heap=" + ESP.getFreeHeap() +
+      ", maxBlock=" + ESP.getMaxAllocHeap();
   Serial.println(String("[NETWORK] ") + source + ": " + diagnostics);
   addDebugLog(String(source) + " network diagnostics: " + diagnostics);
 }
@@ -451,30 +519,33 @@ bool ensureWiFi(const char *source) {
   addDebugLog(String(source) + " network: WiFi=" + status +
               ", RSSI=" + WiFi.RSSI() + " dBm, heap=" + ESP.getFreeHeap());
 
-  if (status == WL_CONNECTED) return true;
+  if (status != WL_CONNECTED) {
+    addDebugLog(String(source) + " WiFi disconnected; reconnecting");
+    WiFi.reconnect();
+    unsigned long reconnectStart = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - reconnectStart < 10000) {
+      delay(250);
+      yield();
+    }
 
-  addDebugLog(String(source) + " WiFi disconnected; reconnecting");
-  WiFi.reconnect();
-  unsigned long reconnectStart = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - reconnectStart < 10000) {
-    delay(250);
-    yield();
+    status = WiFi.status();
+    Serial.printf("[%s] WiFi after reconnect: status=%d RSSI=%d dBm\n",
+                  source, status, WiFi.RSSI());
+    addDebugLog(String(source) + " WiFi reconnect result: " + status);
   }
 
-  status = WiFi.status();
-  Serial.printf("[%s] WiFi after reconnect: status=%d RSSI=%d dBm\n",
-                source, status, WiFi.RSSI());
-  addDebugLog(String(source) + " WiFi reconnect result: " + status);
-  return status == WL_CONNECTED;
+  if (status != WL_CONNECTED) return false;
+
+  // Re-apply IPv4 DNS every time; DHCP renewals can overwrite it.
+  forceDNS();
+  return true;
 }
 
 void fetchScores() {
   if (!ensureWiFi("NFL")) return;
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
-  http.setConnectTimeout(10000);
-  http.setTimeout(15000);
-  http.setReuse(false);
+  configureHttp(http);
   Serial.println("[NFL] fetchScores start");
   addDebugLog("NFL fetch started");
   lastNFLFetch = millis();
@@ -483,11 +554,10 @@ void fetchScores() {
     Serial.printf("[NFL] HTTP GET code: %d\n", httpCode);
     addDebugLog(String("NFL HTTP GET code: ") + httpCode);
     if (httpCode == 200) {
-      String payload = http.getString();
-      Serial.printf("[NFL] payload length: %u\n", (unsigned)payload.length());
-      addDebugLog(String("NFL payload length: ") + payload.length());
+      noteFetchSuccess();
       DynamicJsonDocument doc(32768);
-      DeserializationError err = deserializeJson(doc, payload);
+      // Parse straight from the stream; no big String copy of the payload
+      DeserializationError err = deserializeJson(doc, http.getStream());
       if (err) {
         Serial.print("[NFL] JSON parse error: "); Serial.println(err.c_str());
         addDebugLog(String("NFL JSON parse error: ") + err.c_str());
@@ -510,6 +580,15 @@ void fetchScores() {
       Serial.println("[NFL] HTTP GET failed or returned non-200");
       Serial.printf("[NFL] HTTP error: %s\n", error.c_str());
       addDebugLog(String("NFL HTTP GET failed, HTTP ") + httpCode + ": " + error);
+      if (httpCode <= 0) {
+        logDnsTest("espnscraper.adamjsmith002.workers.dev");
+        http.end();
+        client.stop();
+        noteFetchFailure("NFL");
+        return;
+      } else {
+        noteFetchSuccess(); // server answered, so the network is fine
+      }
     }
     http.end();
     client.stop();
@@ -526,17 +605,11 @@ void fetchStocks() {
   client.setInsecure();
 
   HTTPClient http;
-  http.setConnectTimeout(10000);
-  http.setTimeout(15000);
-  http.setReuse(false);
+  configureHttp(http);
   const char *url = "https://stockscraper.adamjsmith002.workers.dev/";
 
   Serial.println();
   Serial.println("========== STOCK FETCH ==========");
-  Serial.printf("[STOCKS] WiFi status: %d\n", WiFi.status());
-  Serial.printf("[STOCKS] WiFi RSSI: %d dBm\n", WiFi.RSSI());
-  Serial.printf("[STOCKS] IP: %s\n", WiFi.localIP().toString().c_str());
-  Serial.printf("[STOCKS] Free heap: %u\n", ESP.getFreeHeap());
   Serial.printf("[STOCKS] URL: %s\n", url);
   logNetworkDiagnostics("Stocks before HTTPS GET");
 
@@ -561,46 +634,22 @@ void fetchStocks() {
 
   if (httpCode <= 0) {
     logNetworkDiagnostics("Stocks after HTTPS failure");
-    Serial.printf(
-      "[STOCKS] HTTP error: %s\n",
-      http.errorToString(httpCode).c_str()
-    );
-
-    Serial.printf(
-      "[STOCKS] Error code meaning: %d\n",
-      httpCode
-    );
-
-    addDebugLog(
-      String("Stocks HTTP error ") +
-      httpCode +
-      ": " +
-      http.errorToString(httpCode)
-    );
+    logDnsTest("stockscraper.adamjsmith002.workers.dev");
+    Serial.printf("[STOCKS] HTTP error: %s\n", http.errorToString(httpCode).c_str());
+    addDebugLog(String("Stocks HTTP error ") + httpCode + ": " + http.errorToString(httpCode));
 
     http.end();
     client.stop();
     Serial.println("=================================");
+    noteFetchFailure("STOCKS");
     return;
   }
+
+  noteFetchSuccess(); // server answered
 
   if (httpCode != HTTP_CODE_OK) {
-    Serial.printf(
-      "[STOCKS] Server returned HTTP %d\n",
-      httpCode
-    );
-
-    String errorBody = http.getString();
-
-    Serial.printf(
-      "[STOCKS] Response: %s\n",
-      errorBody.c_str()
-    );
-
-    addDebugLog(
-      String("Stocks server HTTP ") +
-      httpCode
-    );
+    Serial.printf("[STOCKS] Server returned HTTP %d\n", httpCode);
+    addDebugLog(String("Stocks server HTTP ") + httpCode);
 
     http.end();
     client.stop();
@@ -608,38 +657,20 @@ void fetchStocks() {
     return;
   }
 
-  String payload = http.getString();
-
-  Serial.printf(
-    "[STOCKS] Successful response\n"
-  );
   addDebugLog("Stocks successful response");
 
-  Serial.printf(
-    "[STOCKS] Payload length: %u bytes\n",
-    (unsigned)payload.length()
-  );
-  addDebugLog(String("Stocks payload length: ") + payload.length() + " bytes");
-
   DynamicJsonDocument doc(16384);
-
-  DeserializationError err =
-    deserializeJson(doc, payload);
+  DeserializationError err = deserializeJson(doc, http.getStream());
 
   if (err || !doc.is<JsonArray>()) {
-
     Serial.print("[STOCKS] JSON parse error: ");
-
     if (err) {
       Serial.println(err.c_str());
     } else {
       Serial.println("response is not an array");
     }
 
-    addDebugLog(
-      String("Stocks JSON error: ") +
-      (err ? err.c_str() : "not an array")
-    );
+    addDebugLog(String("Stocks JSON error: ") + (err ? err.c_str() : "not an array"));
 
     http.end();
     client.stop();
@@ -650,7 +681,6 @@ void fetchStocks() {
   int parsedStockCount = 0;
 
   for (JsonVariant v : doc.as<JsonArray>()) {
-
     if (parsedStockCount >= MAX_STOCKS)
       break;
 
@@ -669,16 +699,8 @@ void fetchStocks() {
   stockCount = parsedStockCount;
   currentStock = 0;
 
-  Serial.printf(
-    "[STOCKS] Parsed stocks: %d\n",
-    stockCount
-  );
-  addDebugLog(String("Stocks parsed stocks: ") + stockCount);
-
-  addDebugLog(
-    String("Stocks fetched: ") +
-    stockCount
-  );
+  Serial.printf("[STOCKS] Parsed stocks: %d\n", stockCount);
+  addDebugLog(String("Stocks fetched: ") + stockCount);
 
   http.end();
   client.stop();
@@ -694,14 +716,16 @@ void fetchWeather() {
   client.setInsecure();
 
   HTTPClient http;
-  http.setConnectTimeout(10000);
-  http.setTimeout(15000);
-  http.setReuse(false);
+  configureHttp(http);
 
   const char *url = "https://api.open-meteo.com/v1/forecast?latitude=41.83&longitude=-72.70&current=temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,wind_speed_10m&temperature_unit=fahrenheit&wind_speed_unit=mph";
 
   logNetworkDiagnostics("Weather before HTTPS GET");
   addDebugLog("Weather fetch started");
+
+  // Set the retry timestamp up front so a failing fetch doesn't get retried
+  // in a tight loop every time the weather screen comes around.
+  lastWeatherFetch = millis();
 
   if (!http.begin(client, url)) {
     Serial.println("[WEATHER] http.begin failed");
@@ -715,12 +739,10 @@ void fetchWeather() {
   addDebugLog(String("Weather HTTP GET code: ") + httpCode);
 
   if (httpCode == 200) {
+    noteFetchSuccess();
     DynamicJsonDocument doc(2048);
-    String payload = http.getString();
-    Serial.printf("[WEATHER] payload length: %u\n", (unsigned)payload.length());
-    addDebugLog(String("Weather payload length: ") + payload.length());
 
-    DeserializationError err = deserializeJson(doc, payload);
+    DeserializationError err = deserializeJson(doc, http.getStream());
     if (err) {
       Serial.printf("[WEATHER] JSON parse error: %s\n", err.c_str());
       addDebugLog(String("Weather JSON parse error: ") + err.c_str());
@@ -747,6 +769,15 @@ void fetchWeather() {
     logNetworkDiagnostics("Weather after HTTPS failure");
     Serial.printf("[WEATHER] HTTP error: %s\n", http.errorToString(httpCode).c_str());
     addDebugLog(String("Weather HTTP error ") + httpCode + ": " + http.errorToString(httpCode));
+    if (httpCode <= 0) {
+      logDnsTest("api.open-meteo.com");
+      http.end();
+      client.stop();
+      noteFetchFailure("WEATHER");
+      return;
+    } else {
+      noteFetchSuccess();
+    }
   }
 
   http.end();
@@ -761,9 +792,7 @@ void fetchWeather() {
   client.setInsecure();
 
   HTTPClient http;
-  http.setConnectTimeout(10000);
-  http.setTimeout(15000);
-  http.setReuse(false);
+  configureHttp(http);
 
   const char *url = "https://api.weather.gov/gridpoints/BOX/68,91/forecast";
 
@@ -783,13 +812,13 @@ void fetchWeather() {
   addDebugLog(String("Forecast HTTP GET code: ") + httpCode);
 
   if (httpCode == 200) {
-    String payload = http.getString();
+    noteFetchSuccess();
 
     StaticJsonDocument<512> filter;
     filter["properties"]["periods"][0]["detailedForecast"] = true;
 
     DynamicJsonDocument doc(8192);
-    DeserializationError err = deserializeJson(doc, payload, DeserializationOption::Filter(filter));
+    DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
 
     if (!err) {
       localWeather.summary = doc["properties"]["periods"][0]["detailedForecast"].as<String>();
@@ -802,6 +831,15 @@ void fetchWeather() {
   } else {
     logNetworkDiagnostics("Forecast after HTTPS failure");
     addDebugLog(String("Forecast HTTP error ") + httpCode + ": " + http.errorToString(httpCode));
+    if (httpCode <= 0) {
+      logDnsTest("api.weather.gov");
+      http.end();
+      client.stop();
+      noteFetchFailure("FORECAST");
+      return;
+    } else {
+      noteFetchSuccess();
+    }
   }
 
   http.end();
@@ -931,6 +969,8 @@ void setupWeb() {
     html += "<div class='metric'><span class='metric-label'>Heap free</span><span class='metric-value'>" + String(freeHeap) + " bytes</span></div>";
     html += "<div class='metric'><span class='metric-label'>Minimum free heap</span><span class='metric-value'>" + String(ESP.getMinFreeHeap()) + " bytes</span></div>";
     html += "<div class='metric'><span class='metric-label'>Largest free block</span><span class='metric-value'>" + String(ESP.getMaxAllocHeap()) + " bytes</span></div>";
+    html += "<div class='metric'><span class='metric-label'>Consecutive fetch failures</span><span class='metric-value'>" + String(consecutiveFailures) + "</span></div>";
+    html += "<div class='metric'><span class='metric-label'>DNS server</span><span class='metric-value'>" + WiFi.dnsIP().toString() + "</span></div>";
     html += "<div class='metric'><span class='metric-label'>Uptime</span><span class='metric-value'>" + String(millis() / 1000) + " seconds</span></div></div>";
 
     if (debugLogCount == 0) {
@@ -939,7 +979,7 @@ void setupWeb() {
       int start = (debugLogNext - debugLogCount + MAX_DEBUG_LOGS) % MAX_DEBUG_LOGS;
       for (int i = 0; i < debugLogCount; i++) {
         int index = (start + i) % MAX_DEBUG_LOGS;
-        html += "<div class='log'>" + debugLogs[index] + "</div>";
+        html += "<div class='log'>" + String(debugLogs[index]) + "</div>";
       }
     }
 
@@ -1010,6 +1050,15 @@ void setup() {
   Serial.println("WiFi Connected!");
   addDebugLog("WiFi connected");
   Serial.println(WiFi.localIP()); // Still prints to your computer's Serial Monitor for you
+
+  // Keep the radio awake and let the stack auto-reconnect
+  WiFi.setSleep(false);
+  WiFi.setAutoReconnect(true);
+
+  // Use IPv4 DNS (some routers advertise an IPv6-only DNS server)
+  forceDNS();
+  logNetworkDiagnostics("Boot");
+  logDnsTest("api.open-meteo.com");
 
   checkForUpdates();
   setupWeb();
