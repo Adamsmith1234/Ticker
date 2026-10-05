@@ -125,7 +125,7 @@ void checkForUpdates() {
     addDebugLog(String("Firmware versions: current=") + currentVersion + ", available=" + newVersion);
 
     if (newVersion > currentVersion) {
-      Serial.println("New version found! Starting update...");
+      Serial.println("New version found! Starting update....");
       addDebugLog("Firmware update available; starting update");
       
       // The update() function handles the download and will automatically reboot on success
