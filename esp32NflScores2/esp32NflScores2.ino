@@ -1130,7 +1130,7 @@ void loop() {
     else if (cycleStage == 3) {
       if (millis() - lastWeatherFetch > 900000 || lastWeatherFetch == 0) {
         fetchWeather();
-        //fetchForecastText();
+        fetchForecastText();
       }
       displayWeather();
       cycleStage = 0; // Restart cycle
