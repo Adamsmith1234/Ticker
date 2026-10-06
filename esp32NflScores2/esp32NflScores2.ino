@@ -15,6 +15,7 @@
 #include <ESPmDNS.h>
 #include <esp_system.h>
 #include <lwip/dns.h>      // for forcing IPv4 DNS servers
+#include <Preferences.h>   // saves the sports filter across reboots
 #include <version.h>
 
 /* ================= CONFIG ================= */
@@ -245,12 +246,41 @@ struct Game {
   char away[8];  char awayScore[8];
   char home[8];  char homeScore[8];
   char status[32];
+  uint8_t awayRank, homeRank; // 0 = unranked / no rank
   uint8_t ar, ag, ab, hr, hg, hb;
 };
 #define MAX_GAMES 60
 Game games[MAX_GAMES];
 int gameCount = 0, currentGame = 0;
 unsigned long lastSportsFetch = 0;
+
+// League filter: toggled from the web dashboard and saved in flash.
+// Bit i of enabledLeagues = sportsLeagues[i] is shown. Add a league here AND in the Worker.
+const char *sportsLeagues[] = {"NFL", "NCAAF", "NBA", "NCAAB", "NHL", "AHL", "MLB"};
+#define NUM_SPORT_LEAGUES ((int)(sizeof(sportsLeagues) / sizeof(sportsLeagues[0])))
+uint16_t enabledLeagues = 0xFFFF;           // default: everything on
+volatile bool sportsFilterChanged = false;  // tells the scroll loop to stop and refetch
+Preferences prefs;
+
+bool leagueEnabled(const char *league) {
+  for (int i = 0; i < NUM_SPORT_LEAGUES; i++) {
+    if (strcmp(league, sportsLeagues[i]) == 0) return (enabledLeagues & (1 << i)) != 0;
+  }
+  return true; // leagues the firmware doesn't know about always show
+}
+
+void loadLeagueFilter() {
+  prefs.begin("ticker", false);
+  enabledLeagues = prefs.getUShort("leagues", 0xFFFF);
+  prefs.end();
+  addDebugLog(String("League filter mask: 0x") + String(enabledLeagues, HEX));
+}
+
+void saveLeagueFilter() {
+  prefs.begin("ticker", false);
+  prefs.putUShort("leagues", enabledLeagues);
+  prefs.end();
+}
 
 // STOCKS
 struct Stock { String symbol; float price, percent; };
@@ -334,88 +364,56 @@ void copyScore(JsonVariant v, char *dest, size_t destSize) {
 }
 
 /* ================= DISPLAY FUNCTIONS ================= */
-// 8x8 sport icons (1 = lit pixel, 0 = dark; the dark pixels inside a shape are
-// the seams/laces). Hand-drawn, so tweak the bytes if any look off on your matrix.
-const uint8_t PROGMEM football_bmp[]   = {0x00,0x3C,0x7E,0xC3,0xFF,0x7E,0x3C,0x00};
-const uint8_t PROGMEM basketball_bmp[] = {0x2C,0x6E,0xEF,0x81,0xEF,0xEF,0x6E,0x2C};
-const uint8_t PROGMEM hockey_bmp[]     = {0x00,0x00,0x3C,0x42,0x3C,0x7E,0x3C,0x00};
-const uint8_t PROGMEM baseball_bmp[]   = {0x3C,0x7E,0xDB,0xBD,0xBD,0xDB,0x7E,0x3C};
-
-// showTag = also print the league name after the icon, for leagues that share
-// a sport icon with a bigger league (NCAAF vs NFL, NCAAB vs NBA, AHL vs NHL).
-struct LeagueIcon { const char *league; const uint8_t *bmp; uint8_t r, g, b; bool showTag; };
-const LeagueIcon leagueIcons[] = {
-  {"NFL",   football_bmp,   190, 100,  40, false},
-  {"NCAAF", football_bmp,   190, 100,  40, true },
-  {"NBA",   basketball_bmp, 255, 130,   0, false},
-  {"NCAAB", basketball_bmp, 255, 130,   0, true },
-  {"NHL",   hockey_bmp,     200, 200, 200, false},
-  {"AHL",   hockey_bmp,     200, 200, 200, true },
-  {"MLB",   baseball_bmp,   255, 255, 255, false}
-};
-
-// Returns the index into leagueIcons, or -1 if the league has no icon
-// (those fall back to the old "(LEAGUE) " text).
-int findLeagueIcon(const char *league) {
-  for (size_t i = 0; i < sizeof(leagueIcons) / sizeof(leagueIcons[0]); i++) {
-    if (strcmp(league, leagueIcons[i].league) == 0) return (int)i;
-  }
-  return -1;
-}
-
-// Format:  [icon] ATL:14 - NO:0 | 15:00 - 2nd
-// Upcoming games (status is a start time) show "LAL @ SAC" instead of 0-0 scores.
+// Format:  (NFL) ATL:14 - NO:0 | 15:00 - 2nd
+// - The "(LEAGUE) " tag only shows on the first game of each league run.
+// - Ranked teams get a rank prefix in their own color:  #5 OSU:14 - #10 ISU:7
+// - Upcoming games (status is a start time) show "LAL @ SAC" instead of 0-0 scores.
 void displaySportsGame(int idx) {
   Game &g = games[idx];
   Serial.printf("[SPORTS] displaySportsGame start idx=%d gameCount=%d\n", idx, gameCount);
 
   bool scheduled = strstr(g.status, " AM ") || strstr(g.status, " PM ");
+  bool showLeague = (idx == 0) || strcmp(games[idx - 1].league, g.league) != 0;
 
   // Build each colored segment once, before the scroll loop
-  char leagueTxt[16], awayTxt[20], midTxt[4], homeTxt[20], statusTxt[40];
-  int iconIdx = findLeagueIcon(g.league);
-  const LeagueIcon *icon = (iconIdx >= 0) ? &leagueIcons[iconIdx] : nullptr;
-  int leadPx; // pixels used before the team text starts
-  if (icon) {
-    // 8px icon + 2px gap, then the league name only for leagues sharing an icon
-    if (icon->showTag) snprintf(leagueTxt, sizeof(leagueTxt), "%s ", g.league);
-    else leagueTxt[0] = '\0';
-    leadPx = 10 + (int)strlen(leagueTxt) * 6;
-  } else {
-    snprintf(leagueTxt, sizeof(leagueTxt), "(%s) ", g.league);
-    leadPx = (int)strlen(leagueTxt) * 6;
-  }
+  char leagueTxt[16], awayName[16], homeName[16];
+  char awayTxt[28], midTxt[4], homeTxt[28], statusTxt[40];
+
+  if (showLeague && g.league[0]) snprintf(leagueTxt, sizeof(leagueTxt), "(%s) ", g.league);
+  else leagueTxt[0] = '\0';
+
+  // Team names, with an optional "#rank " prefix (same color as the team)
+  if (g.awayRank > 0) snprintf(awayName, sizeof(awayName), "#%d %s", g.awayRank, g.away);
+  else snprintf(awayName, sizeof(awayName), "%s", g.away);
+  if (g.homeRank > 0) snprintf(homeName, sizeof(homeName), "#%d %s", g.homeRank, g.home);
+  else snprintf(homeName, sizeof(homeName), "%s", g.home);
+
   if (scheduled) {
-    snprintf(awayTxt, sizeof(awayTxt), "%s", g.away);
+    snprintf(awayTxt, sizeof(awayTxt), "%s", awayName);
     strcpy(midTxt, " @ ");
-    snprintf(homeTxt, sizeof(homeTxt), "%s", g.home);
+    snprintf(homeTxt, sizeof(homeTxt), "%s", homeName);
   } else {
-    snprintf(awayTxt, sizeof(awayTxt), "%s:%s", g.away, g.awayScore);
+    snprintf(awayTxt, sizeof(awayTxt), "%s:%s", awayName, g.awayScore);
     strcpy(midTxt, " - ");
-    snprintf(homeTxt, sizeof(homeTxt), "%s:%s", g.home, g.homeScore);
+    snprintf(homeTxt, sizeof(homeTxt), "%s:%s", homeName, g.homeScore);
   }
   if (g.status[0]) snprintf(statusTxt, sizeof(statusTxt), " | %s", g.status);
   else statusTxt[0] = '\0';
 
   uint16_t cLeague = matrix->Color(170, 170, 170);
-  uint16_t cIcon   = icon ? matrix->Color(icon->r, icon->g, icon->b) : 0;
   uint16_t cAway   = matrix->Color(g.ar, g.ag, g.ab);
   uint16_t cMid    = matrix->Color(255, 255, 255);
   uint16_t cHome   = matrix->Color(g.hr, g.hg, g.hb);
   uint16_t cStatus = matrix->Color(200, 200, 200);
 
-  int textChars = strlen(awayTxt) + strlen(midTxt) + strlen(homeTxt) + strlen(statusTxt);
-  int x = WIDTH, minX = -(leadPx + textChars * 6);
+  int totalChars = strlen(leagueTxt) + strlen(awayTxt) + strlen(midTxt) +
+                   strlen(homeTxt) + strlen(statusTxt);
+  int x = WIDTH, minX = -(totalChars * 6);
 
-  while (x > minX && (currentMode == MODE_SPORTS || currentMode == MODE_CYCLE)) {
+  // sportsFilterChanged ends the scroll early so a filter change applies right away
+  while (x > minX && (currentMode == MODE_SPORTS || currentMode == MODE_CYCLE) && !sportsFilterChanged) {
     server.handleClient(); yield();
-    matrix->fillScreen(0);
-    if (icon) {
-      matrix->drawBitmap(x, 0, icon->bmp, 8, 8, cIcon);
-      matrix->setCursor(x + 10, 1);
-    } else {
-      matrix->setCursor(x, 1);
-    }
+    matrix->fillScreen(0); matrix->setCursor(x, 1);
     matrix->setTextColor(cLeague); matrix->print(leagueTxt);
     matrix->setTextColor(cAway);   matrix->print(awayTxt);
     matrix->setTextColor(cMid);    matrix->print(midTxt);
@@ -652,6 +650,7 @@ bool ensureWiFi(const char *source) {
 }
 
 void fetchSports() {
+  sportsFilterChanged = false; // this fetch picks up the current filter
   if (!ensureWiFi("SPORTS")) return;
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
@@ -676,6 +675,8 @@ void fetchSports() {
       filter[0]["away"]["team"] = true;
       filter[0]["away"]["score"] = true;
       filter[0]["away"]["color"] = true;
+      filter[0]["home"]["rank"] = true;
+      filter[0]["away"]["rank"] = true;
 
       DynamicJsonDocument doc(32768); // ~300 bytes per game after filtering; fits 60 with room to spare
       // Parse straight from the stream; no big String copy of the payload
@@ -693,8 +694,11 @@ void fetchSports() {
           const char *homeTeam = v["home"]["team"] | "";
           if (*awayTeam == '\0' || *homeTeam == '\0') continue;
 
+          const char *league = v["league"] | "";
+          if (!leagueEnabled(league)) continue; // filtered out on the dashboard
+
           Game &g = games[gameCount];
-          strlcpy(g.league, v["league"] | "", sizeof(g.league));
+          strlcpy(g.league, league, sizeof(g.league));
           strlcpy(g.status, v["status"] | "", sizeof(g.status));
           strlcpy(g.away, awayTeam, sizeof(g.away));
           strlcpy(g.home, homeTeam, sizeof(g.home));
@@ -702,6 +706,8 @@ void fetchSports() {
           copyScore(v["home"]["score"], g.homeScore, sizeof(g.homeScore));
           parseTeamColor(v["away"]["color"] | "", g.ar, g.ag, g.ab);
           parseTeamColor(v["home"]["color"] | "", g.hr, g.hg, g.hb);
+          g.awayRank = (uint8_t)(v["away"]["rank"] | 0);
+          g.homeRank = (uint8_t)(v["home"]["rank"] | 0);
           gameCount++;
         }
         Serial.printf("[SPORTS] parsed games: %d\n", gameCount);
@@ -1026,6 +1032,9 @@ void setupWeb() {
     html += "select{background:#0af; color:#fff; font-weight:bold; cursor:pointer;} ";
     html += ".clear{background:#f44;} ";
     html += "input[type=color]{height:50px; cursor:pointer; background:#333;} ";
+    html += ".leagues{display:flex; flex-wrap:wrap; gap:8px; justify-content:center;} ";
+    html += ".lg{background:#222; padding:10px 14px; border-radius:8px; cursor:pointer;} ";
+    html += ".lg input{margin-right:6px; transform:scale(1.3);} ";
     html += "input[type=range]{width:100%; margin:15px 0;}</style></head><body>";
     
     html += String("<h2>Matrix Dashboard V1.") + currentVersion + "</h2>";
@@ -1035,6 +1044,15 @@ void setupWeb() {
     html += "<button class='btn' onclick='fetch(\"/sports\")'>Sports Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
+
+    // Sports filter: one checkbox per league, saved on the device
+    html += "<hr><h3>Sports Filter</h3><div class='leagues'>";
+    for (int i = 0; i < NUM_SPORT_LEAGUES; i++) {
+      html += "<label class='lg'><input type='checkbox' ";
+      if (enabledLeagues & (1 << i)) html += "checked ";
+      html += "onchange='setLeague(" + String(i) + ",this.checked)'>" + String(sportsLeagues[i]) + "</label>";
+    }
+    html += "</div><script>function setLeague(i,on){fetch('/league?i='+i+'&on='+(on?1:0));}</script>";
     html += "<hr><h3>Fireplace Mode</h3>";
     //html += "<button class='btn' onclick='fetch(\"/fireplace\")'>Fireplace Mode</button>";
     html += "<select id='fireMode' onchange='setFireMode(this.value)'>";
@@ -1124,6 +1142,24 @@ void setupWeb() {
   auto sportsHandler = [](){ switchMode(MODE_SPORTS, "WEB /sports"); currentGame = 0; lastSportsFetch = 0; server.send(200,"text/plain","OK"); };
   server.on("/sports", sportsHandler);
   server.on("/nfl", sportsHandler);
+  server.on("/league", []() {
+    if (server.hasArg("i") && server.hasArg("on")) {
+      int i = server.arg("i").toInt();
+      bool on = server.arg("on").toInt() != 0;
+      if (i >= 0 && i < NUM_SPORT_LEAGUES) {
+        if (on) enabledLeagues |= (1 << i);
+        else    enabledLeagues &= ~(1 << i);
+        saveLeagueFilter();
+        addDebugLog(String("League ") + sportsLeagues[i] + (on ? " ON" : " OFF") +
+                    ", mask=0x" + String(enabledLeagues, HEX));
+        // Apply right away: stop the current scroll and refetch from the top
+        currentGame = 0;
+        lastSportsFetch = 0;
+        sportsFilterChanged = true;
+      }
+    }
+    server.send(200, "text/plain", "OK");
+  });
   server.on("/stocks", [](){ switchMode(MODE_STOCKS, "WEB /stocks"); currentStock = 0; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/weather", [](){ switchMode(MODE_WEATHER, "WEB /weather"); lastWeatherFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/fireplace", [](){ switchMode(MODE_FIREPLACE, "WEB /fireplace"); server.send(200,"text/plain","OK"); });
@@ -1197,6 +1233,7 @@ void setup() {
   logNetworkDiagnostics("Boot");
   logDnsTest("api.open-meteo.com");
 
+  loadLeagueFilter();
   checkForUpdates();
   setupWeb();
   Serial.printf("Free sketch space: %u\n", ESP.getFreeSketchSpace());
@@ -1209,6 +1246,10 @@ void loop() {
   if (currentMode == MODE_SPORTS) {
     if (currentGame == 0 && (millis() - lastSportsFetch > 60000 || lastSportsFetch == 0)) fetchSports();
     if (gameCount > 0) { displaySportsGame(currentGame++); if (currentGame >= gameCount) currentGame = 0; }
+    else {
+      matrix->fillScreen(0); matrix->setTextColor(matrix->Color(200, 200, 200));
+      matrix->setCursor(2, 1); matrix->print("NO GAMES"); matrix->show(); delay(500);
+    }
   } 
   else if (currentMode == MODE_STOCKS) {
     // Fetch only at the beginning of a list. This prevents a long list from
