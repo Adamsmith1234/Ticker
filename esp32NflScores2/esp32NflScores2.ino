@@ -1,5 +1,5 @@
 /*
-  NFL + Stocks + Phrases Display - ESP32
+  Sports + Stocks + Phrases + Weather Display - ESP32
 */
 
 #include <Arduino.h>
@@ -30,7 +30,11 @@ const String baseUrl = "https://raw.githubusercontent.com/Adamsmith1234/Ticker/m
 const String versionUrl = baseUrl + "version.txt";
 const String binaryUrl  = baseUrl + "firmware.bin";
 
-enum DisplayMode { MODE_NFL, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE };
+// Cloudflare Worker that returns the multi-league scores JSON
+const char *SPORTS_HOST = "sportscraper.adamjsmith002.workers.dev";
+const char *SPORTS_URL  = "https://sportscraper.adamjsmith002.workers.dev/";
+
+enum DisplayMode { MODE_SPORTS, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE };
 volatile DisplayMode currentMode = MODE_CYCLE;
 
 // Forward declarations (needed outside the Arduino IDE's auto-prototyping)
@@ -206,7 +210,7 @@ void logNetworkDiagnostics(const char *source) {
 
 const char* modeName(DisplayMode mode) {
   switch (mode) {
-    case MODE_NFL:       return "NFL";
+    case MODE_SPORTS:    return "SPORTS";
     case MODE_STOCKS:    return "STOCKS";
     case MODE_PHRASES:   return "PHRASES";
     case MODE_WEATHER:   return "WEATHER";
@@ -234,12 +238,19 @@ volatile uint8_t pg = 150;
 volatile uint8_t pb = 255;
 
 /* ================= DATA STRUCTURES ================= */
-// NFL
-struct Game { String awayAbbr, awayScore, homeAbbr, homeScore; uint8_t ar, ag, ab, hr, hg, hb; };
-#define MAX_GAMES 24
+// SPORTS (NFL, NBA, NHL, MLB, NCAAB, ...)
+// Fixed-size char buffers instead of Strings so refetching never fragments the heap.
+struct Game {
+  char league[8];
+  char away[8];  char awayScore[8];
+  char home[8];  char homeScore[8];
+  char status[32];
+  uint8_t ar, ag, ab, hr, hg, hb;
+};
+#define MAX_GAMES 40
 Game games[MAX_GAMES];
 int gameCount = 0, currentGame = 0;
-unsigned long lastNFLFetch = 0;
+unsigned long lastSportsFetch = 0;
 
 // STOCKS
 struct Stock { String symbol; float price, percent; };
@@ -280,40 +291,93 @@ const uint8_t PROGMEM snow_bmp[] = {0x24,0x66,0xFF,0x7E,0x7E,0xFF,0x66,0x24};
 const uint8_t PROGMEM storm_bmp[] = {0x00,0x0E,0x1F,0x3F,0x0E,0x1C,0x18,0x10};
 
 /* ================= TEAM COLORS ================= */
-struct TeamColor { const char *abbr; uint8_t r,g,b; };
-TeamColor teamColors[] = {
-  {"ARI",204,0,0},{"ATL",255,0,0},{"BAL",127,0,255},{"BUF",51,51,255},{"CAR",102,178,255},
-  {"CHI",255,128,0},{"CIN",222,87,0},{"CLE",255,102,0},{"DAL",0,102,204},{"DEN",255,153,51},
-  {"DET",51,153,255},{"GB",0,102,51},{"HOU",0,76,153},{"IND",0,128,255},{"JAX",0,51,51},
-  {"KC",255,0,0},{"LV",192,192,192},{"LAC",51,153,255},{"LAR",255,255,0},{"MIA",0,128,128},
-  {"MIN",76,0,153},{"NE",0,0,255},{"NO",255,180,0},{"NYG",0,0,255},{"NYJ",0,153,0},
-  {"PHI",0,102,0},{"PIT",255,204,0},{"SEA",128,255,0},{"SF",255,0,0},{"TB",204,0,0},
-  {"TEN",0,34,68},{"WAS",153,0,0}
-};
+// Colors now come from the worker as hex strings ("a71930"). Many team colors
+// are very dark (navy, black, brown) and nearly invisible on an LED matrix, so
+// anything below MIN_LUMINANCE is scaled up (keeping its hue) until readable.
+#define MIN_LUMINANCE 110
 
-void getTeamColor(const String &abbr, uint8_t &r, uint8_t &g, uint8_t &b) {
-  String a = abbr; a.toUpperCase();
-  for (int i=0; i<32; i++) {
-    if (a == teamColors[i].abbr) { r=teamColors[i].r; g=teamColors[i].g; b=teamColors[i].b; return; }
+void parseTeamColor(const char *hex, uint8_t &r, uint8_t &g, uint8_t &b) {
+  r = g = b = 200; // fallback if the color is missing or malformed
+  if (!hex) return;
+  if (hex[0] == '#') hex++;
+  if (strlen(hex) < 6) return;
+
+  long n = strtol(hex, NULL, 16);
+  int ri = (n >> 16) & 0xFF;
+  int gi = (n >> 8) & 0xFF;
+  int bi = n & 0xFF;
+
+  int lum = (ri * 299 + gi * 587 + bi * 114) / 1000;
+  if (lum < MIN_LUMINANCE) {
+    if (ri + gi + bi < 30) {
+      // Essentially black (e.g. PIT, LV): there's no hue to preserve
+      ri = gi = bi = 160;
+    } else {
+      float s = (float)MIN_LUMINANCE / (float)max(lum, 1);
+      ri = min(255, (int)(ri * s));
+      gi = min(255, (int)(gi * s));
+      bi = min(255, (int)(bi * s));
+    }
   }
-  r=g=b=200;
+  r = ri; g = gi; b = bi;
+}
+
+// Scores are strings in the current worker output, but accept numbers too.
+void copyScore(JsonVariant v, char *dest, size_t destSize) {
+  if (v.is<const char*>()) {
+    strlcpy(dest, v.as<const char*>(), destSize);
+  } else if (v.is<int>()) {
+    snprintf(dest, destSize, "%d", v.as<int>());
+  } else {
+    strlcpy(dest, "0", destSize);
+  }
 }
 
 /* ================= DISPLAY FUNCTIONS ================= */
-void displayNFLGame(int idx) {
+// Format:  (NFL) ATL:14 - NO:0 | 15:00 - 2nd
+// Upcoming games (status is a start time) show "LAL @ SAC" instead of 0-0 scores.
+void displaySportsGame(int idx) {
   Game &g = games[idx];
-  Serial.printf("[NFL] displayNFLGame start idx=%d gameCount=%d\n", idx, gameCount);
-  String line = g.awayAbbr + ":" + g.awayScore + " - " + g.homeAbbr + ":" + g.homeScore;
-  int x = WIDTH, minX = -((int)line.length() * 6);
-  while (x > minX && (currentMode == MODE_NFL || currentMode == MODE_CYCLE)) {
+  Serial.printf("[SPORTS] displaySportsGame start idx=%d gameCount=%d\n", idx, gameCount);
+
+  bool scheduled = strstr(g.status, " AM ") || strstr(g.status, " PM ");
+
+  // Build each colored segment once, before the scroll loop
+  char leagueTxt[16], awayTxt[20], midTxt[4], homeTxt[20], statusTxt[40];
+  snprintf(leagueTxt, sizeof(leagueTxt), "(%s) ", g.league);
+  if (scheduled) {
+    snprintf(awayTxt, sizeof(awayTxt), "%s", g.away);
+    strcpy(midTxt, " @ ");
+    snprintf(homeTxt, sizeof(homeTxt), "%s", g.home);
+  } else {
+    snprintf(awayTxt, sizeof(awayTxt), "%s:%s", g.away, g.awayScore);
+    strcpy(midTxt, " - ");
+    snprintf(homeTxt, sizeof(homeTxt), "%s:%s", g.home, g.homeScore);
+  }
+  if (g.status[0]) snprintf(statusTxt, sizeof(statusTxt), " | %s", g.status);
+  else statusTxt[0] = '\0';
+
+  uint16_t cLeague = matrix->Color(170, 170, 170);
+  uint16_t cAway   = matrix->Color(g.ar, g.ag, g.ab);
+  uint16_t cMid    = matrix->Color(255, 255, 255);
+  uint16_t cHome   = matrix->Color(g.hr, g.hg, g.hb);
+  uint16_t cStatus = matrix->Color(200, 200, 200);
+
+  int totalChars = strlen(leagueTxt) + strlen(awayTxt) + strlen(midTxt) +
+                   strlen(homeTxt) + strlen(statusTxt);
+  int x = WIDTH, minX = -(totalChars * 6);
+
+  while (x > minX && (currentMode == MODE_SPORTS || currentMode == MODE_CYCLE)) {
     server.handleClient(); yield();
     matrix->fillScreen(0); matrix->setCursor(x, 1);
-    matrix->setTextColor(matrix->Color(g.ar, g.ag, g.ab)); matrix->print(g.awayAbbr + ":" + g.awayScore);
-    matrix->setTextColor(matrix->Color(255,255,255)); matrix->print(" - ");
-    matrix->setTextColor(matrix->Color(g.hr, g.hg, g.hb)); matrix->print(g.homeAbbr + ":" + g.homeScore);
+    matrix->setTextColor(cLeague); matrix->print(leagueTxt);
+    matrix->setTextColor(cAway);   matrix->print(awayTxt);
+    matrix->setTextColor(cMid);    matrix->print(midTxt);
+    matrix->setTextColor(cHome);   matrix->print(homeTxt);
+    matrix->setTextColor(cStatus); matrix->print(statusTxt);
     matrix->show(); x--; delay(scrollDelay);
   }
-  Serial.println("[NFL] displayNFLGame end");
+  Serial.println("[SPORTS] displaySportsGame end");
 }
 
 void displayStock(int idx) {
@@ -541,50 +605,73 @@ bool ensureWiFi(const char *source) {
   return true;
 }
 
-void fetchScores() {
-  if (!ensureWiFi("NFL")) return;
+void fetchSports() {
+  if (!ensureWiFi("SPORTS")) return;
   WiFiClientSecure client; client.setInsecure();
   HTTPClient http;
   configureHttp(http);
-  Serial.println("[NFL] fetchScores start");
-  addDebugLog("NFL fetch started");
-  lastNFLFetch = millis();
-  if (http.begin(client, "https://espnscraper.adamjsmith002.workers.dev/")) {
+  Serial.println("[SPORTS] fetchSports start");
+  addDebugLog("Sports fetch started");
+  lastSportsFetch = millis();
+  if (http.begin(client, SPORTS_URL)) {
     int httpCode = http.GET();
-    Serial.printf("[NFL] HTTP GET code: %d\n", httpCode);
-    addDebugLog(String("NFL HTTP GET code: ") + httpCode);
+    Serial.printf("[SPORTS] HTTP GET code: %d\n", httpCode);
+    addDebugLog(String("Sports HTTP GET code: ") + httpCode);
     if (httpCode == 200) {
       noteFetchSuccess();
-      DynamicJsonDocument doc(32768);
+
+      // Only keep the fields we display (drops shortName etc.) to save RAM
+      StaticJsonDocument<384> filter;
+      filter[0]["league"] = true;
+      filter[0]["status"] = true;
+      filter[0]["home"]["team"] = true;
+      filter[0]["home"]["score"] = true;
+      filter[0]["home"]["color"] = true;
+      filter[0]["away"]["team"] = true;
+      filter[0]["away"]["score"] = true;
+      filter[0]["away"]["color"] = true;
+
+      DynamicJsonDocument doc(20480);
       // Parse straight from the stream; no big String copy of the payload
-      DeserializationError err = deserializeJson(doc, http.getStream());
+      DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
       if (err) {
-        Serial.print("[NFL] JSON parse error: "); Serial.println(err.c_str());
-        addDebugLog(String("NFL JSON parse error: ") + err.c_str());
+        Serial.print("[SPORTS] JSON parse error: "); Serial.println(err.c_str());
+        addDebugLog(String("Sports JSON parse error: ") + err.c_str());
       } else {
         gameCount = 0;
+        bool truncated = false;
         for (JsonVariant v : doc.as<JsonArray>()) {
-          if (gameCount >= MAX_GAMES) break;
-          String away = v["away"]["team"] | ""; String home = v["home"]["team"] | "";
-          if (away == "" || home == "") continue;
-          uint8_t ar,ag,ab, hr,hg,hb;
-          getTeamColor(away, ar,ag,ab); getTeamColor(home, hr,hg,hb);
-          games[gameCount++] = {away, v["away"]["score"]|"", home, v["home"]["score"]|"", ar,ag,ab, hr,hg,hb};
+          if (gameCount >= MAX_GAMES) { truncated = true; break; }
+
+          const char *awayTeam = v["away"]["team"] | "";
+          const char *homeTeam = v["home"]["team"] | "";
+          if (*awayTeam == '\0' || *homeTeam == '\0') continue;
+
+          Game &g = games[gameCount];
+          strlcpy(g.league, v["league"] | "", sizeof(g.league));
+          strlcpy(g.status, v["status"] | "", sizeof(g.status));
+          strlcpy(g.away, awayTeam, sizeof(g.away));
+          strlcpy(g.home, homeTeam, sizeof(g.home));
+          copyScore(v["away"]["score"], g.awayScore, sizeof(g.awayScore));
+          copyScore(v["home"]["score"], g.homeScore, sizeof(g.homeScore));
+          parseTeamColor(v["away"]["color"] | "", g.ar, g.ag, g.ab);
+          parseTeamColor(v["home"]["color"] | "", g.hr, g.hg, g.hb);
+          gameCount++;
         }
-        Serial.printf("[NFL] parsed games: %d\n", gameCount);
-        addDebugLog(String("NFL parsed games: ") + gameCount);
-        lastNFLFetch = millis();
+        Serial.printf("[SPORTS] parsed games: %d\n", gameCount);
+        addDebugLog(String("Sports parsed games: ") + gameCount + (truncated ? " (truncated at MAX_GAMES)" : ""));
+        lastSportsFetch = millis();
       }
     } else {
       String error = http.errorToString(httpCode);
-      Serial.println("[NFL] HTTP GET failed or returned non-200");
-      Serial.printf("[NFL] HTTP error: %s\n", error.c_str());
-      addDebugLog(String("NFL HTTP GET failed, HTTP ") + httpCode + ": " + error);
+      Serial.println("[SPORTS] HTTP GET failed or returned non-200");
+      Serial.printf("[SPORTS] HTTP error: %s\n", error.c_str());
+      addDebugLog(String("Sports HTTP GET failed, HTTP ") + httpCode + ": " + error);
       if (httpCode <= 0) {
-        logDnsTest("espnscraper.adamjsmith002.workers.dev");
+        logDnsTest(SPORTS_HOST);
         http.end();
         client.stop();
-        noteFetchFailure("NFL");
+        noteFetchFailure("SPORTS");
         return;
       } else {
         noteFetchSuccess(); // server answered, so the network is fine
@@ -593,8 +680,8 @@ void fetchScores() {
     http.end();
     client.stop();
   } else {
-    Serial.println("[NFL] http.begin failed");
-    addDebugLog("NFL http.begin failed");
+    Serial.println("[SPORTS] http.begin failed");
+    addDebugLog("Sports http.begin failed");
     client.stop();
   }
 }
@@ -899,7 +986,7 @@ void setupWeb() {
     html += "<button class='btn' style='background:#f90;' onclick='fetch(\"/cycle\")'>Cycle All Modes</button>";
     html += "<button class='btn' style='background:#555;' onclick='location.href=\"/logs\"'>Debug Logs</button>";  
     html += "<hr><h3>Basic Modes</h3>";  
-    html += "<button class='btn' onclick='fetch(\"/nfl\")'>NFL Mode</button>";
+    html += "<button class='btn' onclick='fetch(\"/sports\")'>Sports Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/stocks\")'>Stock Mode</button>";
     html += "<button class='btn' onclick='fetch(\"/weather\")'>Weather Mode</button>";
     html += "<hr><h3>Fireplace Mode</h3>";
@@ -947,7 +1034,7 @@ void setupWeb() {
     }
   });
 
-  // ... keep your other handlers (/nfl, /stocks, /phrases, /add, /clear, /brightness, /speed) ...
+  // ... keep your other handlers (/sports, /stocks, /phrases, /add, /clear, /brightness, /speed) ...
   // Recent debug log page
   server.on("/logs", []() {
     String html = "<!DOCTYPE html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width, initial-scale=1'>";
@@ -987,7 +1074,10 @@ void setupWeb() {
     server.send(200, "text/html", html);
   });
 
-  server.on("/nfl", [](){ switchMode(MODE_NFL, "WEB /nfl"); lastNFLFetch = 0; server.send(200,"text/plain","OK"); });
+  // "/nfl" kept as an alias so old bookmarks/buttons still work
+  auto sportsHandler = [](){ switchMode(MODE_SPORTS, "WEB /sports"); currentGame = 0; lastSportsFetch = 0; server.send(200,"text/plain","OK"); };
+  server.on("/sports", sportsHandler);
+  server.on("/nfl", sportsHandler);
   server.on("/stocks", [](){ switchMode(MODE_STOCKS, "WEB /stocks"); currentStock = 0; lastStockFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/weather", [](){ switchMode(MODE_WEATHER, "WEB /weather"); lastWeatherFetch = 0; server.send(200,"text/plain","OK"); });
   server.on("/fireplace", [](){ switchMode(MODE_FIREPLACE, "WEB /fireplace"); server.send(200,"text/plain","OK"); });
@@ -1012,7 +1102,8 @@ void setupWeb() {
   server.on("/cycle", [](){ 
     switchMode(MODE_CYCLE, "WEB /cycle"); 
     currentStock = 0;
-    lastNFLFetch = 0; 
+    currentGame = 0;
+    lastSportsFetch = 0; 
     lastStockFetch = 0; 
     lastWeatherFetch = 0;
     server.send(200, "text/plain", "OK"); 
@@ -1069,9 +1160,9 @@ void loop() {
   server.handleClient();
   yield();
 
-  if (currentMode == MODE_NFL) {
-    if (currentGame == 0 && (millis() - lastNFLFetch > 60000 || lastNFLFetch == 0)) fetchScores();
-    if (gameCount > 0) { displayNFLGame(currentGame++); if (currentGame >= gameCount) currentGame = 0; }
+  if (currentMode == MODE_SPORTS) {
+    if (currentGame == 0 && (millis() - lastSportsFetch > 60000 || lastSportsFetch == 0)) fetchSports();
+    if (gameCount > 0) { displaySportsGame(currentGame++); if (currentGame >= gameCount) currentGame = 0; }
   } 
   else if (currentMode == MODE_STOCKS) {
     // Fetch only at the beginning of a list. This prevents a long list from
@@ -1101,14 +1192,14 @@ void loop() {
   }
 
   else if (currentMode == MODE_CYCLE) {
-    static int cycleStage = 0; // 0:NFL but now Artemis, 1:Stock, 2:Phrase, 3:Weather
+    static int cycleStage = 0; // 0:Sports, 1:Stock, 2:Phrase, 3:Weather
     
     if (cycleStage == 0) {
-      if (currentGame == 0 && (millis() - lastNFLFetch > 60000 || lastNFLFetch == 0)) fetchScores();
+      if (currentGame == 0 && (millis() - lastSportsFetch > 60000 || lastSportsFetch == 0)) fetchSports();
       if (gameCount > 0) { 
-        displayNFLGame(currentGame++); 
-        if (currentGame >= gameCount) { currentGame = 0; cycleStage = 1; addDebugLog("Cycle stage: NFL -> STOCKS"); }
-      } else { cycleStage = 1; addDebugLog("Cycle stage: NFL -> STOCKS (no games)"); }
+        displaySportsGame(currentGame++); 
+        if (currentGame >= gameCount) { currentGame = 0; cycleStage = 1; addDebugLog("Cycle stage: SPORTS -> STOCKS"); }
+      } else { cycleStage = 1; addDebugLog("Cycle stage: SPORTS -> STOCKS (no games)"); }
     } 
 
     else if (cycleStage == 1) { // STOCKS
@@ -1134,7 +1225,7 @@ void loop() {
       }
       displayWeather();
       cycleStage = 0; // Restart cycle
-      addDebugLog("Cycle stage: WEATHER -> NFL");
+      addDebugLog("Cycle stage: WEATHER -> SPORTS");
     }
   }
 }
