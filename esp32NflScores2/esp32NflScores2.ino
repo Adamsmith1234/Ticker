@@ -31,8 +31,8 @@ const String versionUrl = baseUrl + "version.txt";
 const String binaryUrl  = baseUrl + "firmware.bin";
 
 // Cloudflare Worker that returns the multi-league scores JSON
-const char *SPORTS_HOST = "espnscraper.adamjsmith002.workers.dev";
-const char *SPORTS_URL  = "https://espnscraper.adamjsmith002.workers.dev/";
+const char *SPORTS_HOST = "sportscraper.adamjsmith002.workers.dev";
+const char *SPORTS_URL  = "https://sportscraper.adamjsmith002.workers.dev/";
 
 enum DisplayMode { MODE_SPORTS, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE };
 volatile DisplayMode currentMode = MODE_CYCLE;
