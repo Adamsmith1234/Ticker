@@ -31,8 +31,8 @@ const String versionUrl = baseUrl + "version.txt";
 const String binaryUrl  = baseUrl + "firmware.bin";
 
 // Cloudflare Worker that returns the multi-league scores JSON
-const char *SPORTS_HOST = "sportscraper.adamjsmith002.workers.dev";
-const char *SPORTS_URL  = "https://sportscraper.adamjsmith002.workers.dev/";
+const char *SPORTS_HOST = "espnscraper.adamjsmith002.workers.dev";
+const char *SPORTS_URL  = "https://espnscraper.adamjsmith002.workers.dev/";
 
 enum DisplayMode { MODE_SPORTS, MODE_STOCKS, MODE_PHRASES, MODE_WEATHER, MODE_CYCLE, MODE_FIREPLACE };
 volatile DisplayMode currentMode = MODE_CYCLE;
@@ -247,7 +247,7 @@ struct Game {
   char status[32];
   uint8_t ar, ag, ab, hr, hg, hb;
 };
-#define MAX_GAMES 40
+#define MAX_GAMES 60
 Game games[MAX_GAMES];
 int gameCount = 0, currentGame = 0;
 unsigned long lastSportsFetch = 0;
@@ -334,7 +334,36 @@ void copyScore(JsonVariant v, char *dest, size_t destSize) {
 }
 
 /* ================= DISPLAY FUNCTIONS ================= */
-// Format:  (NFL) ATL:14 - NO:0 | 15:00 - 2nd
+// 8x8 sport icons (1 = lit pixel, 0 = dark; the dark pixels inside a shape are
+// the seams/laces). Hand-drawn, so tweak the bytes if any look off on your matrix.
+const uint8_t PROGMEM football_bmp[]   = {0x00,0x3C,0x7E,0xC3,0xFF,0x7E,0x3C,0x00};
+const uint8_t PROGMEM basketball_bmp[] = {0x2C,0x6E,0xEF,0x81,0xEF,0xEF,0x6E,0x2C};
+const uint8_t PROGMEM hockey_bmp[]     = {0x00,0x00,0x3C,0x42,0x3C,0x7E,0x3C,0x00};
+const uint8_t PROGMEM baseball_bmp[]   = {0x3C,0x7E,0xDB,0xBD,0xBD,0xDB,0x7E,0x3C};
+
+// showTag = also print the league name after the icon, for leagues that share
+// a sport icon with a bigger league (NCAAF vs NFL, NCAAB vs NBA, AHL vs NHL).
+struct LeagueIcon { const char *league; const uint8_t *bmp; uint8_t r, g, b; bool showTag; };
+const LeagueIcon leagueIcons[] = {
+  {"NFL",   football_bmp,   190, 100,  40, false},
+  {"NCAAF", football_bmp,   190, 100,  40, true },
+  {"NBA",   basketball_bmp, 255, 130,   0, false},
+  {"NCAAB", basketball_bmp, 255, 130,   0, true },
+  {"NHL",   hockey_bmp,     200, 200, 200, false},
+  {"AHL",   hockey_bmp,     200, 200, 200, true },
+  {"MLB",   baseball_bmp,   255, 255, 255, false}
+};
+
+// Returns the index into leagueIcons, or -1 if the league has no icon
+// (those fall back to the old "(LEAGUE) " text).
+int findLeagueIcon(const char *league) {
+  for (size_t i = 0; i < sizeof(leagueIcons) / sizeof(leagueIcons[0]); i++) {
+    if (strcmp(league, leagueIcons[i].league) == 0) return (int)i;
+  }
+  return -1;
+}
+
+// Format:  [icon] ATL:14 - NO:0 | 15:00 - 2nd
 // Upcoming games (status is a start time) show "LAL @ SAC" instead of 0-0 scores.
 void displaySportsGame(int idx) {
   Game &g = games[idx];
@@ -344,7 +373,18 @@ void displaySportsGame(int idx) {
 
   // Build each colored segment once, before the scroll loop
   char leagueTxt[16], awayTxt[20], midTxt[4], homeTxt[20], statusTxt[40];
-  snprintf(leagueTxt, sizeof(leagueTxt), "(%s) ", g.league);
+  int iconIdx = findLeagueIcon(g.league);
+  const LeagueIcon *icon = (iconIdx >= 0) ? &leagueIcons[iconIdx] : nullptr;
+  int leadPx; // pixels used before the team text starts
+  if (icon) {
+    // 8px icon + 2px gap, then the league name only for leagues sharing an icon
+    if (icon->showTag) snprintf(leagueTxt, sizeof(leagueTxt), "%s ", g.league);
+    else leagueTxt[0] = '\0';
+    leadPx = 10 + (int)strlen(leagueTxt) * 6;
+  } else {
+    snprintf(leagueTxt, sizeof(leagueTxt), "(%s) ", g.league);
+    leadPx = (int)strlen(leagueTxt) * 6;
+  }
   if (scheduled) {
     snprintf(awayTxt, sizeof(awayTxt), "%s", g.away);
     strcpy(midTxt, " @ ");
@@ -358,18 +398,24 @@ void displaySportsGame(int idx) {
   else statusTxt[0] = '\0';
 
   uint16_t cLeague = matrix->Color(170, 170, 170);
+  uint16_t cIcon   = icon ? matrix->Color(icon->r, icon->g, icon->b) : 0;
   uint16_t cAway   = matrix->Color(g.ar, g.ag, g.ab);
   uint16_t cMid    = matrix->Color(255, 255, 255);
   uint16_t cHome   = matrix->Color(g.hr, g.hg, g.hb);
   uint16_t cStatus = matrix->Color(200, 200, 200);
 
-  int totalChars = strlen(leagueTxt) + strlen(awayTxt) + strlen(midTxt) +
-                   strlen(homeTxt) + strlen(statusTxt);
-  int x = WIDTH, minX = -(totalChars * 6);
+  int textChars = strlen(awayTxt) + strlen(midTxt) + strlen(homeTxt) + strlen(statusTxt);
+  int x = WIDTH, minX = -(leadPx + textChars * 6);
 
   while (x > minX && (currentMode == MODE_SPORTS || currentMode == MODE_CYCLE)) {
     server.handleClient(); yield();
-    matrix->fillScreen(0); matrix->setCursor(x, 1);
+    matrix->fillScreen(0);
+    if (icon) {
+      matrix->drawBitmap(x, 0, icon->bmp, 8, 8, cIcon);
+      matrix->setCursor(x + 10, 1);
+    } else {
+      matrix->setCursor(x, 1);
+    }
     matrix->setTextColor(cLeague); matrix->print(leagueTxt);
     matrix->setTextColor(cAway);   matrix->print(awayTxt);
     matrix->setTextColor(cMid);    matrix->print(midTxt);
@@ -631,7 +677,7 @@ void fetchSports() {
       filter[0]["away"]["score"] = true;
       filter[0]["away"]["color"] = true;
 
-      DynamicJsonDocument doc(20480);
+      DynamicJsonDocument doc(32768); // ~300 bytes per game after filtering; fits 60 with room to spare
       // Parse straight from the stream; no big String copy of the payload
       DeserializationError err = deserializeJson(doc, http.getStream(), DeserializationOption::Filter(filter));
       if (err) {
