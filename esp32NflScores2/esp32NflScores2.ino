@@ -55,6 +55,20 @@ void forceDNS() {
   dns_setserver(1, &d1);
 }
 
+// A name that never changes, even if the router hands out a new IP:
+//   http://ticker.local
+const char *MDNS_NAME = "ticker";
+
+void startMDNS() {
+  MDNS.end(); // safe if it was never started; lets us restart cleanly after a reconnect
+  if (MDNS.begin(MDNS_NAME)) {
+    MDNS.addService("http", "tcp", 80);
+    addDebugLog(String("mDNS started: http://") + MDNS_NAME + ".local");
+  } else {
+    addDebugLog("mDNS failed to start");
+  }
+}
+
 // Counts consecutive network-level failures (HTTP code <= 0) across all fetches
 int consecutiveFailures = 0;
 
@@ -88,6 +102,7 @@ void noteFetchFailure(const char *source) {
       yield();
     }
     forceDNS();
+    startMDNS();
     addDebugLog(String("WiFi after cycle: ") + WiFi.status());
   }
 }
@@ -640,6 +655,7 @@ bool ensureWiFi(const char *source) {
     Serial.printf("[%s] WiFi after reconnect: status=%d RSSI=%d dBm\n",
                   source, status, WiFi.RSSI());
     addDebugLog(String(source) + " WiFi reconnect result: " + status);
+    if (status == WL_CONNECTED) startMDNS();
   }
 
   if (status != WL_CONNECTED) return false;
@@ -1211,6 +1227,7 @@ void setup() {
   matrix->begin(); 
   matrix->setTextWrap(false);
   
+  WiFi.setHostname(MDNS_NAME); // shows up as "ticker" in your router's device list
   WiFiManager wm;
   
   // This is the key: It only shows the IP if it's NOT connected to WiFi [cite: 100-101, 225].
@@ -1232,6 +1249,7 @@ void setup() {
 
   // Use IPv4 DNS (some routers advertise an IPv6-only DNS server)
   forceDNS();
+  startMDNS(); // http://ticker.local
   logNetworkDiagnostics("Boot");
   logDnsTest("api.open-meteo.com");
 
