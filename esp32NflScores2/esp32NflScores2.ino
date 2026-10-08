@@ -117,7 +117,7 @@ void configureHttp(HTTPClient &http) {
 }
 
 void checkForUpdates() {
-  Serial.println("Checking for updates...");
+  Serial.println("Checking for updates....");
   addDebugLog("Checking for firmware updates");
   WiFiClientSecure client;
   client.setInsecure(); 
